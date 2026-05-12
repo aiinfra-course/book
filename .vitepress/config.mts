@@ -11,7 +11,7 @@ export default defineConfig({
 
     nav: [
       { text: '首页', link: '/' },
-      { text: '技术分享', link: '/talks/01-vllm-automatic-prefix-caching' },
+      { text: '技术分享', link: '/talks/01-vllm-automatic-prefix-caching/' },
     ],
 
     sidebar: [
@@ -20,7 +20,7 @@ export default defineConfig({
         items: [
           {
             text: '01 · vLLM Automatic Prefix Caching',
-            link: '/talks/01-vllm-automatic-prefix-caching',
+            link: '/talks/01-vllm-automatic-prefix-caching/',
           },
         ],
       },
