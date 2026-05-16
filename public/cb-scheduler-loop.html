@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>vLLM v1 调度器循环</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: 'SF Mono','Monaco','Inconsolata','Roboto Mono',monospace;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 18px;
+        }
+        h1 { font-size: 1.2rem; text-align: center; margin-bottom: 4px; color: #4a9eff; }
+        .subtitle { font-size: 0.72rem; color: #555; text-align: center; margin-bottom: 14px; }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 220px 1fr 220px;
+            gap: 12px;
+            align-items: start;
+        }
+
+        .queue-box {
+            background: #242424;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .queue-title {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #333;
+        }
+        .waiting-title { color: #f0a040; }
+        .running-title { color: #4ade80; }
+
+        .req-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 5px;
+            margin-bottom: 4px;
+            font-size: 0.72rem;
+            transition: all 0.3s;
+            border: 1px solid transparent;
+        }
+        .req-item.waiting-style { background: #2a2010; color: #d09050; }
+        .req-item.running-style { background: #102a10; color: #60c060; }
+        .req-item.preempted { background: #2a1010; color: #d05050; border-color: #d05050; }
+        .req-item.highlight {
+            box-shadow: 0 0 10px rgba(255,255,255,0.25);
+            border-color: rgba(255,255,255,0.3);
+        }
+
+        .req-id {
+            font-weight: 700;
+            font-size: 0.8rem;
+        }
+        .req-tokens {
+            font-size: 0.6rem;
+            color: #666;
+        }
+        .req-bar-wrap {
+            flex: 1;
+            height: 6px;
+            background: #333;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .req-bar {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.4s;
+        }
+
+        .center-col {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        /* Phase pipeline */
+        .pipeline {
+            display: flex;
+            align-items: center;
+            gap: 0;
+        }
+        .phase-box {
+            flex: 1;
+            padding: 10px 8px;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 0.7rem;
+            transition: all 0.3s;
+            border: 2px solid transparent;
+        }
+        .phase-box .phase-name { font-weight: 700; font-size: 0.8rem; margin-bottom: 3px; }
+        .phase-box .phase-file { font-size: 0.55rem; color: #555; }
+        .phase-box.idle { background: #242424; color: #555; }
+        .phase-box.active {
+            background: #2a3a5a;
+            border-color: #4a9eff;
+            color: #9ac8ff;
+            box-shadow: 0 0 12px rgba(74,158,255,0.3);
+        }
+        .phase-box.done { background: #1a2a1a; color: #4a8a4a; border-color: #2a4a2a; }
+
+        .arrow {
+            width: 24px;
+            text-align: center;
+            font-size: 1rem;
+            color: #555;
+            flex-shrink: 0;
+            transition: color 0.3s;
+        }
+        .arrow.active { color: #4a9eff; }
+
+        /* Budget meter */
+        .budget-box {
+            background: #242424;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .budget-title {
+            font-size: 0.65rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+        .budget-bar-wrap {
+            height: 14px;
+            background: #333;
+            border-radius: 7px;
+            overflow: hidden;
+            margin-bottom: 4px;
+        }
+        .budget-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4a9eff, #7adeff);
+            border-radius: 7px;
+            transition: width 0.4s;
+        }
+        .budget-nums {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.6rem;
+            color: #666;
+        }
+
+        /* Iteration log */
+        .log-box {
+            background: #1a1a1a;
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 0.65rem;
+            color: #666;
+            max-height: 120px;
+            overflow-y: auto;
+            border: 1px solid #2a2a2a;
+        }
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #222;
+        }
+        .log-entry:last-child { border-bottom: none; }
+        .log-entry .log-time { color: #4a9eff; margin-right: 6px; }
+        .log-entry .log-msg { color: #aaa; }
+        .log-entry.warn .log-msg { color: #f0a040; }
+        .log-entry.ok .log-msg { color: #4ade80; }
+
+        /* KV blocks visualization */
+        .kv-box {
+            background: #242424;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .kv-title { font-size: 0.65rem; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .kv-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 3px;
+        }
+        .kv-block {
+            height: 20px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.5rem;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        .kv-block.free { background: #2a2a2a; color: #444; }
+        .kv-block.req-a { background: #1a3a5a; color: #6a9adf; }
+        .kv-block.req-b { background: #3a1a1a; color: #df6a6a; }
+        .kv-block.req-c { background: #1a3a1a; color: #6adf6a; }
+        .kv-block.req-d { background: #3a2a1a; color: #dfaf6a; }
+        .kv-block.req-e { background: #2a1a3a; color: #af6adf; }
+        .kv-block.new { animation: flashBlock 0.4s ease; }
+        @keyframes flashBlock {
+            0% { transform: scale(1.3); box-shadow: 0 0 8px rgba(255,255,255,0.5); }
+            100% { transform: scale(1); }
+        }
+
+        .step-info {
+            background: #2a2a2a;
+            border-left: 3px solid #4a9eff;
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            border-radius: 0 6px 6px 0;
+        }
+        .step-title { color: #4a9eff; font-size: 0.85rem; font-weight: 700; }
+        .step-desc { color: #ccc; font-size: 0.72rem; margin-top: 3px; }
+        .code-ref { font-size: 0.6rem; color: #555; margin-top: 2px; }
+
+        .controls {
+            display: flex; gap: 10px; justify-content: center; margin: 0 0 12px;
+        }
+        .btn {
+            padding: 7px 18px; border: none; border-radius: 6px;
+            font-size: 0.78rem; font-weight: 500; cursor: pointer; transition: all 0.2s;
+        }
+        .btn.primary { background: #4a9eff; color: #fff; }
+        .btn.primary:hover { background: #5aaeff; }
+        .btn.secondary { background: #333; color: #ccc; }
+        .btn.secondary:hover { background: #444; }
+
+        .iter-badge {
+            background: #333;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 0.65rem;
+            color: #888;
+            display: inline-block;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>vLLM v1 调度器 — 每轮迭代流程</h1>
+    <p class="subtitle">基于 vllm/v1/core/sched/scheduler.py 真实代码逻辑</p>
+
+    <div class="controls">
+        <button class="btn secondary" onclick="prevStep()">上一步</button>
+        <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+        <button class="btn secondary" onclick="nextStep()">下一步</button>
+        <button class="btn secondary" onclick="resetAnim()">重置</button>
+    </div>
+
+    <div class="step-info">
+        <div class="step-title" id="s-title">初始状态</div>
+        <div class="step-desc" id="s-desc">5 个请求等待调度，Token Budget = 8192</div>
+        <div class="code-ref" id="s-code"></div>
+    </div>
+
+    <div class="layout">
+        <!-- Waiting Queue -->
+        <div class="queue-box">
+            <div class="queue-title waiting-title">⏳ Waiting 队列</div>
+            <div id="waiting-queue"></div>
+        </div>
+
+        <!-- Center -->
+        <div class="center-col">
+            <div class="iter-badge" id="iter-badge">Iteration 0</div>
+
+            <!-- Pipeline -->
+            <div class="pipeline">
+                <div class="phase-box" id="phase-schedule">
+                    <div class="phase-name">① schedule()</div>
+                    <div class="phase-file">scheduler.py:310</div>
+                </div>
+                <div class="arrow" id="arr-1">→</div>
+                <div class="phase-box" id="phase-execute">
+                    <div class="phase-name">② execute_model()</div>
+                    <div class="phase-file">executor → GPU</div>
+                </div>
+                <div class="arrow" id="arr-2">→</div>
+                <div class="phase-box" id="phase-update">
+                    <div class="phase-name">③ update()</div>
+                    <div class="phase-file">num_computed += N</div>
+                </div>
+            </div>
+
+            <!-- Budget -->
+            <div class="budget-box">
+                <div class="budget-title">Token Budget (max_num_scheduled_tokens)</div>
+                <div class="budget-bar-wrap">
+                    <div class="budget-bar" id="budget-bar" style="width:100%"></div>
+                </div>
+                <div class="budget-nums">
+                    <span id="budget-used">used: 0</span>
+                    <span id="budget-total">total: 8192</span>
+                    <span id="budget-pct">100%</span>
+                </div>
+            </div>
+
+            <!-- KV Blocks -->
+            <div class="kv-box">
+                <div class="kv-title">KV Cache 块分配 (PagedAttention blocks, size=16)</div>
+                <div class="kv-grid" id="kv-grid"></div>
+                <div style="font-size:0.55rem;color:#555;margin-top:6px;">每格 = 1个 KV block (16 tokens)，共 32 blocks</div>
+            </div>
+
+            <!-- Log -->
+            <div class="log-box" id="log-box"></div>
+        </div>
+
+        <!-- Running Queue -->
+        <div class="queue-box">
+            <div class="queue-title running-title">🚀 Running 队列</div>
+            <div id="running-queue"></div>
+        </div>
+    </div>
+
+    <script>
+    const MAX_BUDGET = 256; // simplified scale (real=8192)
+    const TOTAL_BLOCKS = 32;
+
+    // Requests: id, label, totalTokens, color class
+    const REQS = [
+        { id:'A', label:'Req A', prompt:32, decode:48, colorClass:'req-a', color:'#4a9eff' },
+        { id:'B', label:'Req B', prompt:16, decode:64, colorClass:'req-b', color:'#df6a6a' },
+        { id:'C', label:'Req C', prompt:48, decode:32, colorClass:'req-c', color:'#6adf6a' },
+        { id:'D', label:'Req D', prompt:32, decode:48, colorClass:'req-d', color:'#dfaf6a' },
+        { id:'E', label:'Req E', prompt:16, decode:48, colorClass:'req-e', color:'#af6adf' },
+    ];
+
+    const steps = [
+        {
+            title: '初始状态',
+            desc: '5 个请求到达，全部进入 waiting 队列。Running 队列为空。',
+            code: 'add_request() → self.waiting.append(request)',
+            iter: 0,
+            phase: null,
+            waiting: ['A','B','C','D','E'],
+            running: [],
+            computed: {A:0,B:0,C:0,D:0,E:0},
+            budgetUsed: 0,
+            kvBlocks: {},
+            highlight: null,
+            log: null,
+        },
+        {
+            title: '迭代 1 — ① schedule() 开始',
+            desc: 'token_budget = 8192。遍历 running 队列（空），然后从 waiting 取出请求。',
+            code: 'scheduler.py:329  token_budget = self.max_num_scheduled_tokens',
+            iter: 1,
+            phase: 'schedule',
+            waiting: ['A','B','C','D','E'],
+            running: [],
+            computed: {A:0,B:0,C:0,D:0,E:0},
+            budgetUsed: 0,
+            kvBlocks: {},
+            highlight: null,
+            log: { type:'ok', msg:'[iter1] schedule() 开始，budget=256, running=0, waiting=5' },
+        },
+        {
+            title: '迭代 1 — 调度 Req A 进入 Running',
+            desc: 'waiting.peek_request() 取出 A。allocate_slots(A, 32 tokens) 成功，分配 2 个 KV block。budget -= 32。',
+            code: 'scheduler.py:425  new_blocks = kv_cache_manager.allocate_slots(request, num_new_tokens)',
+            iter: 1,
+            phase: 'schedule',
+            waiting: ['B','C','D','E'],
+            running: ['A'],
+            computed: {A:0,B:0,C:0,D:0,E:0},
+            budgetUsed: 32,
+            kvBlocks: {A:2},
+            highlight: 'A',
+            log: { type:'ok', msg:'[iter1] Req A → running, alloc 2 blocks, budget: 256→224' },
+        },
+        {
+            title: '迭代 1 — 调度 B、C、D、E',
+            desc: '依次调度 B(16T,1块)、C(48T,3块)、D(32T,2块)、E(16T,1块)。Budget 消耗 144，剩余 112。',
+            code: 'scheduler.py:345  while req_index < len(self.running) and token_budget > 0',
+            iter: 1,
+            phase: 'schedule',
+            waiting: [],
+            running: ['A','B','C','D','E'],
+            computed: {A:0,B:0,C:0,D:0,E:0},
+            budgetUsed: 144,
+            kvBlocks: {A:2,B:1,C:3,D:2,E:1},
+            highlight: null,
+            log: { type:'ok', msg:'[iter1] 5 个请求全部进入 running，共用 9 blocks，budget: 256→112' },
+        },
+        {
+            title: '迭代 1 — ② execute_model() GPU 计算',
+            desc: 'Batch size=5，处理各请求的 Prefill tokens。GPU 执行 forward pass，计算 KV 并写入 HBM。',
+            code: 'core.py → executor.execute_model(scheduler_output)',
+            iter: 1,
+            phase: 'execute',
+            waiting: [],
+            running: ['A','B','C','D','E'],
+            computed: {A:0,B:0,C:0,D:0,E:0},
+            budgetUsed: 144,
+            kvBlocks: {A:2,B:1,C:3,D:2,E:1},
+            highlight: null,
+            log: { type:'ok', msg:'[iter1] GPU forward pass: batch_size=5, total_tokens=144' },
+        },
+        {
+            title: '迭代 1 — ③ update_from_output() 更新状态',
+            desc: 'num_computed_tokens 更新：A:0→32, B:0→16, C:0→48, D:0→32, E:0→16。A/C完成Prefill，B/D/E完成Prefill。',
+            code: 'scheduler.py:932  request.num_computed_tokens += num_scheduled_tokens',
+            iter: 1,
+            phase: 'update',
+            waiting: [],
+            running: ['A','B','C','D','E'],
+            computed: {A:32,B:16,C:48,D:32,E:16},
+            budgetUsed: 144,
+            kvBlocks: {A:2,B:1,C:3,D:2,E:1},
+            highlight: null,
+            log: { type:'ok', msg:'[iter1] 更新 computed_tokens: A=32, B=16, C=48, D=32, E=16' },
+        },
+        {
+            title: '迭代 2 — 开始 Decode 阶段',
+            desc: '新迭代开始。每个请求 num_new_tokens = num_tokens_with_spec - num_computed_tokens = 1 (decode模式)。Budget=8192，全部运行。',
+            code: 'scheduler.py:366  num_new_tokens = request.num_tokens_with_spec + request.num_output_placeholders - request.num_computed_tokens',
+            iter: 2,
+            phase: 'schedule',
+            waiting: [],
+            running: ['A','B','C','D','E'],
+            computed: {A:33,B:17,C:49,D:33,E:17},
+            budgetUsed: 5,
+            kvBlocks: {A:3,B:2,C:3,D:2,E:2},
+            highlight: null,
+            log: { type:'ok', msg:'[iter2] Decode: 5个请求各生成1 token，budget_used=5' },
+        },
+        {
+            title: '内存压力 — 新请求 Req F 到达',
+            desc: '新请求 F (prompt=96 tokens) 到达 waiting 队列。当前 KV blocks 已用完 28/32，Req F 需要 6 blocks，内存不足！',
+            code: 'scheduler.py:425  new_blocks = kv_cache_manager.allocate_slots(...)',
+            iter: 3,
+            phase: 'schedule',
+            waiting: ['F(new)'],
+            running: ['A','B','C','D','E'],
+            computed: {A:42,B:26,C:58,D:42,E:26},
+            budgetUsed: 5,
+            kvBlocks: {A:3,B:2,C:4,D:3,E:2},
+            highlight: 'F',
+            log: { type:'warn', msg:'[iter3] Req F 需要 6 blocks，当前仅剩 4 blocks → 触发抢占！' },
+        },
+        {
+            title: '抢占 — _preempt_request(Req E)',
+            desc: '优先级最低/最近加入的 E 被抢占。释放 2 个 KV blocks，num_computed_tokens 重置为 0，放回 waiting 队列头部。',
+            code: 'scheduler.py:910  def _preempt_request(self, request):\n    kv_cache_manager.free(request)\n    request.num_computed_tokens = 0\n    waiting.prepend_request(request)',
+            iter: 3,
+            phase: 'schedule',
+            waiting: ['E(preempted)','F(new)'],
+            running: ['A','B','C','D'],
+            computed: {A:42,B:26,C:58,D:42,E:0},
+            budgetUsed: 5,
+            kvBlocks: {A:3,B:2,C:4,D:3},
+            highlight: 'E',
+            log: { type:'warn', msg:'[iter3] ⚡ 抢占 Req E：释放 2 blocks，E.num_computed_tokens=0，放回waiting头部' },
+        },
+        {
+            title: '抢占后 — Req F 成功调度',
+            desc: '空出 4 blocks，Req F 分配 6 blocks 成功（包含新释放的），加入 running。E 在 waiting 队列头部，高优先级，下轮优先调度。',
+            code: 'scheduler.py:930  self.waiting.prepend_request(request)  # 高优先级',
+            iter: 3,
+            phase: 'schedule',
+            waiting: ['E(preempted)'],
+            running: ['A','B','C','D','F(new)'],
+            computed: {A:42,B:26,C:58,D:42,E:0,F:0},
+            budgetUsed: 101,
+            kvBlocks: {A:3,B:2,C:4,D:3,F:6},
+            highlight: 'F',
+            log: { type:'ok', msg:'[iter3] Req F 成功入队，E 在 waiting 头部等待下一轮' },
+        },
+        {
+            title: '稳定运行 — Continuous Batching 效果',
+            desc: '每轮迭代 GPU 满负荷运行：A/B/C/D 持续 decode，F 进行 prefill，完成后立即加入更多请求。GPU 利用率 > 95%。',
+            code: '# 持续循环 — GPU 永不空等\nwhile True:\n    output = scheduler.schedule()\n    result = executor.execute_model(output)\n    scheduler.update_from_output(result)',
+            iter: 4,
+            phase: 'execute',
+            waiting: [],
+            running: ['A','B','C','D','F'],
+            computed: {A:48,B:32,C:64,D:48,E:0,F:48},
+            budgetUsed: 5,
+            kvBlocks: {A:3,B:2,C:4,D:3,F:6},
+            highlight: null,
+            log: { type:'ok', msg:'[iter4+] Continuous Batching: GPU 持续忙碌，吞吐量最大化' },
+        },
+    ];
+
+    let currentStep = 0;
+    let isPlaying = false;
+    let timer = null;
+    const logHistory = [];
+
+    function renderQueues(step) {
+        const wq = document.getElementById('waiting-queue');
+        const rq = document.getElementById('running-queue');
+
+        function makeItem(id, style, computed) {
+            const reqId = id.replace('(new)','').replace('(preempted)','');
+            const req = REQS.find(r=>r.id===reqId);
+            if (!req) {
+                // synthetic
+                return `<div class="req-item ${style}">
+                    <div class="req-id" style="color:#c090f0">${id}</div>
+                    <div class="req-tokens">新到达</div>
+                </div>`;
+            }
+            const total = req.prompt + req.decode;
+            const comp = computed[reqId] || 0;
+            const pct = Math.min(100, Math.round(comp/total*100));
+            const isHL = step.highlight === reqId || step.highlight === id;
+            return `<div class="req-item ${style}${isHL?' highlight':''}">
+                <div class="req-id">${req.label}</div>
+                <div style="flex:1">
+                    <div class="req-bar-wrap">
+                        <div class="req-bar" style="width:${pct}%;background:${req.color}"></div>
+                    </div>
+                    <div class="req-tokens">${comp}/${total} tokens</div>
+                </div>
+            </div>`;
+        }
+
+        wq.innerHTML = step.waiting.map(id => makeItem(id, 'waiting-style', step.computed)).join('') ||
+            '<div style="color:#444;font-size:0.65rem;text-align:center;padding:10px">空</div>';
+        rq.innerHTML = step.running.map(id => makeItem(id, 'running-style', step.computed)).join('') ||
+            '<div style="color:#444;font-size:0.65rem;text-align:center;padding:10px">空</div>';
+    }
+
+    function renderPhase(step) {
+        ['schedule','execute','update'].forEach(p => {
+            const el = document.getElementById('phase-' + p);
+            el.className = 'phase-box ' + (step.phase === p ? 'active' : (
+                step.phase && ['schedule','execute','update'].indexOf(p) < ['schedule','execute','update'].indexOf(step.phase) ? 'done' : 'idle'
+            ));
+        });
+        document.getElementById('arr-1').className = 'arrow' + (step.phase === 'execute' || step.phase === 'update' ? ' active' : '');
+        document.getElementById('arr-2').className = 'arrow' + (step.phase === 'update' ? ' active' : '');
+    }
+
+    function renderBudget(step) {
+        const pct = Math.max(0, 100 - Math.round(step.budgetUsed/MAX_BUDGET*100));
+        document.getElementById('budget-bar').style.width = pct + '%';
+        document.getElementById('budget-used').textContent = 'used: ' + step.budgetUsed;
+        document.getElementById('budget-pct').textContent = pct + '% remaining';
+    }
+
+    function renderKV(step) {
+        const grid = document.getElementById('kv-grid');
+        // Build block allocation
+        const blocks = Array(TOTAL_BLOCKS).fill(null);
+        let idx = 0;
+        for (const [reqId, count] of Object.entries(step.kvBlocks)) {
+            for (let i=0;i<count;i++) {
+                if (idx < TOTAL_BLOCKS) blocks[idx++] = reqId;
+            }
+        }
+        grid.innerHTML = blocks.map((owner, i) => {
+            if (!owner) return `<div class="kv-block free">·</div>`;
+            const reqId = owner.replace('(new)','');
+            const req = REQS.find(r=>r.id===reqId);
+            const cls = req ? req.colorClass : 'req-a';
+            const isHL = step.highlight === reqId;
+            return `<div class="kv-block ${cls}${isHL?' new':''}">${owner[0]}</div>`;
+        }).join('');
+    }
+
+    function renderLog(step) {
+        if (step.log) {
+            logHistory.push(step.log);
+            if (logHistory.length > 8) logHistory.shift();
+        }
+        const box = document.getElementById('log-box');
+        box.innerHTML = logHistory.map((l,i) =>
+            `<div class="log-entry ${l.type||''}">
+                <span class="log-time">[${i}]</span>
+                <span class="log-msg">${l.msg}</span>
+            </div>`
+        ).join('');
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function render() {
+        const step = steps[currentStep];
+        document.getElementById('s-title').textContent = step.title;
+        document.getElementById('s-desc').textContent = step.desc;
+        document.getElementById('s-code').textContent = step.code || '';
+        document.getElementById('iter-badge').textContent = 'Iteration ' + step.iter;
+        renderQueues(step);
+        renderPhase(step);
+        renderBudget(step);
+        renderKV(step);
+        renderLog(step);
+    }
+
+    function nextStep() {
+        if (currentStep < steps.length-1) { currentStep++; render(); }
+    }
+    function prevStep() {
+        if (currentStep > 0) { currentStep--; render(); }
+    }
+    function togglePlay() {
+        if (isPlaying) {
+            clearInterval(timer); isPlaying = false;
+            document.getElementById('playBtn').textContent = '▶ 播放';
+        } else {
+            isPlaying = true;
+            document.getElementById('playBtn').textContent = '⏸ 暂停';
+            timer = setInterval(() => {
+                if (currentStep < steps.length-1) { currentStep++; render(); }
+                else { clearInterval(timer); isPlaying = false; document.getElementById('playBtn').textContent = '▶ 播放'; }
+            }, 1800);
+        }
+    }
+    function resetAnim() {
+        clearInterval(timer); isPlaying = false;
+        document.getElementById('playBtn').textContent = '▶ 播放';
+        logHistory.length = 0;
+        currentStep = 0; render();
+    }
+
+    render();
+    </script>
+</body>
+</html>

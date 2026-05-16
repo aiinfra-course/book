@@ -11,6 +11,7 @@
 | 章节 | 主题 |
 |------|------|
 | 01 | vLLM Automatic Prefix Caching：原理、源码与实践 |
+| 02 | vLLM Continuous Batching：原理深度解析 |
 
 ## 本地运行
 

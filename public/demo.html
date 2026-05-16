@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM 推理：KV Cache 数据流</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+            background: #1a1a1a;
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 { font-size: 1.5rem; text-align: center; margin-bottom: 8px; color: #4a9eff; }
+        .subtitle { font-size: 0.85rem; color: #666; text-align: center; margin-bottom: 20px; }
+        
+        .tokens-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .token-box {
+            background: #242424;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        
+        .token-label {
+            font-size: 0.7rem;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .token-list { display: flex; flex-wrap: wrap; gap: 6px; }
+        
+        .token {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        
+        .token.prompt { background: #2a2520; color: #c9a86c; }
+        .token.output { background: #202a20; color: #7cb97c; }
+        
+        .token.active { box-shadow: 0 0 10px rgba(255,255,255,0.2); }
+        .token.processing { animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .token.future {
+            opacity: 0.25;
+            background: #2a2a2a;
+            color: #555;
+        }
+        
+        .step-info {
+            background: #242424;
+            border-left: 3px solid #4a9eff;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            border-radius: 0 6px 6px 0;
+        }
+        
+        .step-number { font-size: 1.3rem; font-weight: 600; color: #4a9eff; margin-bottom: 4px; }
+        .step-desc { font-size: 0.9rem; color: #ccc; }
+        .step-detail { font-size: 0.8rem; color: #666; margin-top: 4px; }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        
+        .btn {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn.primary { background: #4a9eff; color: #fff; }
+        .btn.primary:hover { background: #5aa8ff; }
+        .btn.secondary { background: #333; color: #ccc; }
+        .btn.secondary:hover { background: #444; }
+        
+        .legend {
+            display: flex;
+            gap: 25px;
+            justify-content: center;
+            font-size: 0.7rem;
+            color: #666;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item { display: flex; align-items: center; gap: 6px; }
+        
+        /* 硬件架构 */
+        .hardware-arch {
+            display: grid;
+            grid-template-columns: 1fr 80px 1fr;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .hardware-box {
+            background: #242424;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        
+        .hardware-title {
+            font-size: 0.8rem;
+            color: #888;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        /* GPU */
+        .gpu-box { border-right: 3px solid #4a9eff; }
+        .gpu-box .hardware-title { color: #4a9eff; }
+        
+        .gpu-die {
+            background: #1a1a1a;
+            border-radius: 6px;
+            padding: 12px;
+        }
+        
+        .gpu-label { font-size: 0.6rem; color: #666; margin-bottom: 10px; }
+        
+        .layers {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .layer {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 8px 12px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            transition: all 0.3s;
+        }
+        
+        .layer.active {
+            background: #3a4a6a;
+            box-shadow: 0 0 15px rgba(74, 158, 255, 0.3);
+        }
+        
+        .layer-num {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            background: #333;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #888;
+        }
+        
+        .layer.active .layer-num {
+            background: #4a9eff;
+            color: #fff;
+        }
+        
+        .layer-info { flex: 1; }
+        .layer-name { font-size: 0.7rem; color: #888; margin-bottom: 4px; }
+        
+        .layer-kv {
+            display: flex;
+            gap: 2px;
+            align-items: center;
+        }
+        
+        .kv-chip {
+            width: 16px;
+            height: 16px;
+            border-radius: 2px;
+            font-size: 0.45rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+        
+        .kv-chip.empty { background: #333; color: #555; }
+        .kv-chip.filled { background: #4a9eff; color: #fff; }
+        .kv-chip.active { 
+            background: #fff; 
+            color: #1a1a1a;
+            animation: kvPulse 0.5s infinite;
+        }
+        
+        @keyframes kvPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+        }
+        
+        .kv-chip.reading {
+            animation: kvRead 0.5s infinite;
+            background: #4ade80;
+            color: #1a1a1a;
+        }
+        
+        @keyframes kvRead {
+            0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(74, 222, 128, 0.6); }
+            50% { opacity: 0.6; box-shadow: 0 0 15px rgba(74, 222, 128, 1); }
+        }
+        
+        /* 数据总线 */
+        .bus-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        
+        .bus-lines {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .bus-line-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .bus-line {
+            width: 60px;
+            height: 2px;
+            background: #333;
+            position: relative;
+        }
+        
+        .data-pulse {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background: #4a9eff;
+            border-radius: 50%;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0;
+        }
+        
+        .data-pulse.write { animation: dataWrite 1s infinite; }
+        .data-pulse.read { animation: dataRead 1s infinite; }
+        
+        @keyframes dataWrite {
+            0% { left: 0; opacity: 0; }
+            20% { opacity: 1; }
+            80% { opacity: 1; }
+            100% { left: 100%; opacity: 0; }
+        }
+        
+        @keyframes dataRead {
+            0% { right: 0; opacity: 0; }
+            20% { opacity: 1; }
+            80% { opacity: 1; }
+            100% { right: 100%; opacity: 0; }
+        }
+        
+        .bus-label { font-size: 0.55rem; color: #666; text-align: center; }
+        
+        .nvlink-label {
+            position: absolute;
+            bottom: -30px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.6rem;
+            color: #666;
+        }
+        
+        /* HBM 显存 */
+        .hbm-box { border-left: 3px solid #888; }
+        .hbm-box .hardware-title { color: #888; }
+        
+        .hbm-memory {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .hbm-layer {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .hbm-layer-label {
+            font-size: 0.6rem;
+            color: #666;
+            margin-bottom: 4px;
+        }
+        
+        .hbm-layer-chips {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 4px;
+        }
+        
+        .kv-block {
+            height: 16px;
+            border-radius: 2px;
+            font-size: 0.45rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+        
+        .kv-block.empty { background: #333; color: #555; }
+        .kv-block.filled { background: #4a9eff; color: #fff; }
+        .kv-block.active { 
+            background: #fff; 
+            color: #1a1a1a;
+            animation: hbmActive 0.5s infinite;
+        }
+        
+        @keyframes hbmActive {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.15); box-shadow: 0 0 10px rgba(255, 255, 255, 0.5); }
+        }
+        
+        .kv-block.reading {
+            background: #4ade80;
+            color: #1a1a1a;
+            box-shadow: 0 0 10px rgba(74, 222, 128, 0.6);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM 推理：KV Cache 数据流</h1>
+        <p class="subtitle">输入: "今天天气" → 输出: "很好"</p>
+        
+        <!-- Token 输入输出 -->
+        <div class="tokens-section">
+            <div class="token-box">
+                <div class="token-label">输入 Prompt</div>
+                <div class="token-list" id="input-tokens"></div>
+            </div>
+            <div class="token-box">
+                <div class="token-label">输出 Token</div>
+                <div class="token-list" id="output-tokens"></div>
+            </div>
+        </div>
+        
+        <!-- 步骤信息 -->
+        <div class="step-info">
+            <div class="step-number" id="step-number">1</div>
+            <div class="step-desc" id="step-desc">初始状态</div>
+            <div class="step-detail" id="step-detail">准备开始推理</div>
+        </div>
+        
+        <!-- 控制按钮 -->
+        <div class="controls">
+            <button class="btn secondary" onclick="prevStep()">上一步</button>
+            <button class="btn primary" onclick="togglePlay()">播放/暂停</button>
+            <button class="btn secondary" onclick="nextStep()">下一步</button>
+            <button class="btn secondary" onclick="reset()">重置</button>
+        </div>
+        
+        <!-- 硬件架构 -->
+        <div class="hardware-arch">
+            <!-- GPU -->
+            <div class="hardware-box gpu-box">
+                <div class="hardware-title">GPU Compute</div>
+                
+                <div class="gpu-die">
+                    <div class="gpu-label">Transformer Layers</div>
+                    <div class="layers" id="gpu-layers">
+                        <div class="layer" id="layer-1">
+                            <div class="layer-num">L1</div>
+                            <div class="layer-info">
+                                <div class="layer-name">Attention + FFN</div>
+                                <div class="layer-kv" id="kv-gpu-1"></div>
+                            </div>
+                        </div>
+                        <div class="layer" id="layer-2">
+                            <div class="layer-num">L2</div>
+                            <div class="layer-info">
+                                <div class="layer-name">Attention + FFN</div>
+                                <div class="layer-kv" id="kv-gpu-2"></div>
+                            </div>
+                        </div>
+                        <div class="layer" id="layer-3">
+                            <div class="layer-num">L3</div>
+                            <div class="layer-info">
+                                <div class="layer-name">Attention + FFN</div>
+                                <div class="layer-kv" id="kv-gpu-3"></div>
+                            </div>
+                        </div>
+                        <div class="layer" id="layer-4">
+                            <div class="layer-num">L4</div>
+                            <div class="layer-info">
+                                <div class="layer-name">Attention + FFN</div>
+                                <div class="layer-kv" id="kv-gpu-4"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 数据总线 -->
+            <div class="bus-section">
+                <div class="bus-lines">
+                    <div class="bus-line-group">
+                        <div class="bus-line">
+                            <div class="data-pulse write" id="write-1"></div>
+                        </div>
+                        <div class="bus-label">L1</div>
+                    </div>
+                    <div class="bus-line-group">
+                        <div class="bus-line">
+                            <div class="data-pulse write" id="write-2"></div>
+                        </div>
+                        <div class="bus-label">L2</div>
+                    </div>
+                    <div class="bus-line-group">
+                        <div class="bus-line">
+                            <div class="data-pulse write" id="write-3"></div>
+                        </div>
+                        <div class="bus-label">L3</div>
+                    </div>
+                    <div class="bus-line-group">
+                        <div class="bus-line">
+                            <div class="data-pulse write" id="write-4"></div>
+                        </div>
+                        <div class="bus-label">L4</div>
+                    </div>
+                </div>
+                <div class="nvlink-label">NVLink 900 GB/s</div>
+            </div>
+            
+            <!-- HBM -->
+            <div class="hardware-box hbm-box">
+                <div class="hardware-title">HBM VRAM</div>
+                
+                <div class="hbm-memory">
+                    <div class="hbm-layer">
+                        <div class="hbm-layer-label">Layer 1 KV Cache</div>
+                        <div class="hbm-layer-chips" id="hbm-1"></div>
+                    </div>
+                    <div class="hbm-layer">
+                        <div class="hbm-layer-label">Layer 2 KV Cache</div>
+                        <div class="hbm-layer-chips" id="hbm-2"></div>
+                    </div>
+                    <div class="hbm-layer">
+                        <div class="hbm-layer-label">Layer 3 KV Cache</div>
+                        <div class="hbm-layer-chips" id="hbm-3"></div>
+                    </div>
+                    <div class="hbm-layer">
+                        <div class="hbm-layer-label">Layer 4 KV Cache</div>
+                        <div class="hbm-layer-chips" id="hbm-4"></div>
+                    </div>
+                </div>
+                <div style="font-size: 0.55rem; color: #666; text-align: center; margin-top: 10px;">每层独立存储 KV Cache</div>
+            </div>
+        </div>
+        
+        <!-- 图例 -->
+        <div class="legend">
+            <div class="legend-item"><div style="width: 12px; height: 12px; background: #4a9eff; border-radius: 2px;"></div>已填充</div>
+            <div class="legend-item"><div style="width: 12px; height: 12px; background: #4ade80; border-radius: 2px;"></div>读取中</div>
+            <div class="legend-item"><div style="width: 12px; height: 12px; background: #fff; border-radius: 2px;"></div>写入中</div>
+            <div class="legend-item"><div style="width: 12px; height: 12px; background: #333; border-radius: 2px;"></div>空</div>
+        </div>
+    </div>
+
+    <script>
+        const inputTokens = ['今', '天', '天', '气'];
+        const outputTokens = ['很', '好'];
+        const numLayers = 4;
+        const maxKV = 8;
+        
+        const steps = [
+            { desc: '初始状态', detail: '输入: "今天天气"，共 4 个 Token', phase: 'idle', activeLayer: -1, completedLayers: [], kvFilled: {1:[], 2:[], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 0, showWrite: false, showRead: false },
+            
+            { desc: 'Prefill L1', detail: 'L1: 计算 K1[0~3] → 写入 HBM', phase: 'prefill', activeLayer: 1, completedLayers: [], kvFilled: {1:[0,1,2,3], 2:[], 3:[], 4:[]}, inputProcessing: true, decodedTokens: 0, showWrite: true, showRead: false },
+            { desc: 'Prefill L2', detail: 'L2: 计算 K2[0~3] → 写入 HBM', phase: 'prefill', activeLayer: 2, completedLayers: [1], kvFilled: {1:[0,1,2,3], 2:[0,1,2,3], 3:[], 4:[]}, inputProcessing: true, decodedTokens: 0, showWrite: true, showRead: false },
+            { desc: 'Prefill L3', detail: 'L3: 计算 K3[0~3] → 写入 HBM', phase: 'prefill', activeLayer: 3, completedLayers: [1,2], kvFilled: {1:[0,1,2,3], 2:[0,1,2,3], 3:[0,1,2,3], 4:[]}, inputProcessing: true, decodedTokens: 0, showWrite: true, showRead: false },
+            { desc: 'Prefill L4', detail: 'L4: 计算 K4[0~3] → 写入 HBM', phase: 'prefill', activeLayer: 4, completedLayers: [1,2,3], kvFilled: {1:[0,1,2,3], 2:[0,1,2,3], 3:[0,1,2,3], 4:[0,1,2,3]}, inputProcessing: true, decodedTokens: 0, showWrite: true, showRead: false },
+            
+            { desc: 'Decode L1', detail: 'L1: 读取 K[0~3] → 写入 K[4]', phase: 'decode', activeLayer: 1, completedLayers: [], kvFilled: {1:[0,1,2,3,4], 2:[0,1,2,3], 3:[0,1,2,3], 4:[0,1,2,3]}, kvRead: {1:[0,1,2,3], 2:[], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 0, showWrite: true, showRead: true },
+            { desc: 'Decode L2', detail: 'L2: 读取 K[0~3] → 写入 K[4]', phase: 'decode', activeLayer: 2, completedLayers: [1], kvFilled: {1:[0,1,2,3,4], 2:[0,1,2,3,4], 3:[0,1,2,3], 4:[0,1,2,3]}, kvRead: {1:[], 2:[0,1,2,3], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 0, showWrite: true, showRead: true },
+            { desc: 'Decode L3', detail: 'L3: 读取 K[0~3] → 写入 K[4]', phase: 'decode', activeLayer: 3, completedLayers: [1,2], kvFilled: {1:[0,1,2,3,4], 2:[0,1,2,3,4], 3:[0,1,2,3,4], 4:[0,1,2,3]}, kvRead: {1:[], 2:[], 3:[0,1,2,3], 4:[]}, inputProcessing: false, decodedTokens: 0, showWrite: true, showRead: true },
+            { desc: 'Decode L4', detail: 'L4: 读取 K[0~3] → 写入 K[4] → 生成 "很"', phase: 'decode', activeLayer: 4, completedLayers: [1,2,3], kvFilled: {1:[0,1,2,3,4], 2:[0,1,2,3,4], 3:[0,1,2,3,4], 4:[0,1,2,3,4]}, kvRead: {1:[], 2:[], 3:[], 4:[0,1,2,3]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            
+            { desc: 'Decode L1', detail: 'L1: 读取 K[0~4] → 写入 K[5]', phase: 'decode', activeLayer: 1, completedLayers: [], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4], 3:[0,1,2,3,4], 4:[0,1,2,3,4]}, kvRead: {1:[0,1,2,3,4], 2:[], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            { desc: 'Decode L2', detail: 'L2: 读取 K[0~4] → 写入 K[5]', phase: 'decode', activeLayer: 2, completedLayers: [1], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4], 4:[0,1,2,3,4]}, kvRead: {1:[], 2:[0,1,2,3,4], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            { desc: 'Decode L3', detail: 'L3: 读取 K[0~4] → 写入 K[5]', phase: 'decode', activeLayer: 3, completedLayers: [1,2], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4,5], 4:[0,1,2,3,4]}, kvRead: {1:[], 2:[], 3:[0,1,2,3,4], 4:[]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            { desc: 'Decode L4', detail: 'L4: 读取 K[0~4] → 写入 K[5] → 生成 "好"', phase: 'decode', activeLayer: 4, completedLayers: [1,2,3], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4,5], 4:[0,1,2,3,4,5]}, kvRead: {1:[], 2:[], 3:[], 4:[0,1,2,3,4]}, inputProcessing: false, decodedTokens: 2, showWrite: true, showRead: true },
+            
+            { desc: '推理完成', detail: '输出: "很好"', phase: 'idle', activeLayer: -1, completedLayers: [1,2,3,4], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4,5], 4:[0,1,2,3,4,5]}, inputProcessing: false, decodedTokens: 2, showWrite: false, showRead: false },
+        ];
+            { desc: 'Decode L3', detail: 'L3: 读取 K[0~3] → 写入 K[4]', phase: 'decode', activeLayer: 3, completedLayers: [1,2], kvFilled: {1:[0,1,2,3,4], 2:[0,1,2,3,4], 3:[0,1,2,3,4], 4:[0,1,2,3]}, kvRead: {1:[], 2:[], 3:[0,1,2,3], 4:[]}, inputProcessing: false, decodedTokens: 0, showWrite: true, showRead: true },
+            { desc: 'Decode L4', detail: 'L4: 读取 K[0~3] → 写入 K[4] → 生成 "很"', phase: 'decode', activeLayer: 4, completedLayers: [1,2,3], kvFilled: {1:[0,1,2,3,4], 2:[0,1,2,3,4], 3:[0,1,2,3,4], 4:[0,1,2,3,4]}, kvRead: {1:[], 2:[], 3:[], 4:[0,1,2,3]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            
+            { desc: 'Decode L1', detail: 'L1: 读取 K[0~4] → 写入 K[5]', phase: 'decode', activeLayer: 1, completedLayers: [], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4], 3:[0,1,2,3,4], 4:[0,1,2,3,4]}, kvRead: {1:[0,1,2,3,4], 2:[], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            { desc: 'Decode L2', detail: 'L2: 读取 K[0~4] → 写入 K[5]', phase: 'decode', activeLayer: 2, completedLayers: [1], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4], 4:[0,1,2,3,4]}, kvRead: {1:[], 2:[0,1,2,3,4], 3:[], 4:[]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            { desc: 'Decode L3', detail: 'L3: 读取 K[0~4] → 写入 K[5]', phase: 'decode', activeLayer: 3, completedLayers: [1,2], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4,5], 4:[0,1,2,3,4]}, kvRead: {1:[], 2:[], 3:[0,1,2,3,4], 4:[]}, inputProcessing: false, decodedTokens: 1, showWrite: true, showRead: true },
+            { desc: 'Decode L4', detail: 'L4: 读取 K[0~4] → 写入 K[5] → 生成 "好"', phase: 'decode', activeLayer: 4, completedLayers: [1,2,3], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4,5], 4:[0,1,2,3,4,5]}, kvRead: {1:[], 2:[], 3:[], 4:[0,1,2,3,4]}, inputProcessing: false, decodedTokens: 2, showWrite: true, showRead: true },
+            
+            { desc: '推理完成', detail: '输出: "很好"', phase: 'idle', activeLayer: -1, completedLayers: [1,2,3,4], kvFilled: {1:[0,1,2,3,4,5], 2:[0,1,2,3,4,5], 3:[0,1,2,3,4,5], 4:[0,1,2,3,4,5]}, inputProcessing: false, decodedTokens: 2, showWrite: false, showRead: false },
+        ];
+        
+        let currentStep = 0;
+        let isPlaying = false;
+        let interval = null;
+        
+        function renderHBM() {
+            const step = steps[currentStep];
+            
+            for (let layer = 1; layer <= numLayers; layer++) {
+                const filled = step.kvFilled[layer] || [];
+                const reading = step.kvRead && step.kvRead[layer] || [];
+                let html = '';
+                
+                for (let i = 0; i < maxKV; i++) {
+                    const isFilled = filled.includes(i);
+                    const isLatest = filled.length > 0 && i === filled[filled.length - 1];
+                    const isReading = reading.includes(i);
+                    const isWriting = step.showWrite && step.activeLayer === layer && isLatest;
+                    
+                    let cls = 'kv-block ';
+                    if (isFilled) {
+                        if (isWriting) {
+                            cls += 'active';
+                        } else if (isReading) {
+                            cls += 'reading';
+                        } else {
+                            cls += 'filled';
+                        }
+                    } else {
+                        cls += 'empty';
+                    }
+                    
+                    html += `<div class="${cls}">${isFilled ? i : '-'}</div>`;
+                }
+                
+                document.getElementById('hbm-' + layer).innerHTML = html;
+            }
+        }
+        
+        function renderGPUKV() {
+            const step = steps[currentStep];
+            
+            for (let layer = 1; layer <= numLayers; layer++) {
+                const reading = step.kvRead && step.kvRead[layer] || [];
+                const isActive = step.activeLayer === layer;
+                let html = '';
+                
+                if (isActive && reading.length > 0) {
+                    for (let i = 0; i < reading.length; i++) {
+                        html += `<div class="kv-chip reading">${reading[i]}</div>`;
+                    }
+                    
+                    for (let i = reading.length; i < maxKV; i++) {
+                        html += `<div class="kv-chip empty">-</div>`;
+                    }
+                } else {
+                    for (let i = 0; i < maxKV; i++) {
+                        html += `<div class="kv-chip empty">-</div>`;
+                    }
+                }
+                
+                document.getElementById('kv-gpu-' + layer).innerHTML = html;
+            }
+        }
+        
+        function renderTokens() {
+            const step = steps[currentStep];
+            
+            let inputHtml = '';
+            inputTokens.forEach((token, idx) => {
+                let cls = 'token prompt' + (step.inputProcessing ? ' processing' : '');
+                inputHtml += `<span class="${cls}">${token}</span>`;
+            });
+            document.getElementById('input-tokens').innerHTML = inputHtml;
+            
+            let outputHtml = '';
+            outputTokens.forEach((token, idx) => {
+                let cls = 'token output';
+                if (idx < step.decodedTokens) {
+                    if (idx === step.decodedTokens - 1 && step.activeLayer === 4 && step.phase === 'decode') cls += ' active';
+                } else {
+                    cls += ' future';
+                }
+                outputHtml += `<span class="${cls}">${token}</span>`;
+            });
+            document.getElementById('output-tokens').innerHTML = outputHtml;
+        }
+        
+        function renderLayers() {
+            const step = steps[currentStep];
+            
+            for (let layer = 1; layer <= numLayers; layer++) {
+                const el = document.getElementById('layer-' + layer);
+                el.classList.remove('active');
+                if (step.activeLayer === layer) {
+                    el.classList.add('active');
+                }
+            }
+        }
+        
+        function renderBus() {
+            const step = steps[currentStep];
+            
+            for (let layer = 1; layer <= numLayers; layer++) {
+                const pulse = document.getElementById('write-' + layer);
+                pulse.classList.remove('write', 'read');
+                
+                if (step.showWrite && step.activeLayer === layer) {
+                    pulse.classList.add('write');
+                } else if (step.showRead && step.activeLayer === layer) {
+                    pulse.classList.add('read');
+                }
+            }
+        }
+        
+        function renderStepInfo() {
+            const step = steps[currentStep];
+            document.getElementById('step-number').textContent = currentStep + 1;
+            document.getElementById('step-desc').textContent = step.desc;
+            document.getElementById('step-detail').textContent = step.detail;
+        }
+        
+        function render() {
+            renderHBM();
+            renderGPUKV();
+            renderTokens();
+            renderLayers();
+            renderBus();
+            renderStepInfo();
+        }
+        
+        function nextStep() {
+            if (currentStep < steps.length - 1) {
+                currentStep++;
+                render();
+            }
+        }
+        
+        function prevStep() {
+            if (currentStep > 0) {
+                currentStep--;
+                render();
+            }
+        }
+        
+        function togglePlay() {
+            if (isPlaying) {
+                clearInterval(interval);
+                isPlaying = false;
+            } else {
+                isPlaying = true;
+                interval = setInterval(() => {
+                    if (currentStep < steps.length - 1) {
+                        currentStep++;
+                        render();
+                    } else {
+                        clearInterval(interval);
+                        isPlaying = false;
+                    }
+                }, 1500);
+            }
+        }
+        
+        function reset() {
+            clearInterval(interval);
+            isPlaying = false;
+            currentStep = 0;
+            render();
+        }
+        
+        render();
+    </script>
+</body>
+</html>

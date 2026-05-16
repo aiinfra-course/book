@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>静态批处理 vs Continuous Batching</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 20px;
+        }
+        h1 { font-size: 1.3rem; text-align: center; margin-bottom: 4px; color: #4a9eff; }
+        .subtitle { font-size: 0.75rem; color: #555; text-align: center; margin-bottom: 16px; }
+
+        .section-title {
+            font-size: 0.8rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .static-title { background: #3a2020; color: #ff6b6b; }
+        .dynamic-title { background: #203a20; color: #4ade80; }
+
+        .panel {
+            background: #242424;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .timeline-wrap {
+            overflow-x: auto;
+            padding-bottom: 4px;
+        }
+
+        .timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 600px;
+        }
+
+        .req-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .req-label {
+            width: 52px;
+            font-size: 0.7rem;
+            color: #888;
+            flex-shrink: 0;
+            text-align: right;
+        }
+
+        .req-label .req-name { color: #ccc; font-weight: 600; }
+
+        .slots {
+            display: flex;
+            gap: 2px;
+            flex: 1;
+        }
+
+        .slot {
+            height: 28px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.6rem;
+            font-weight: 600;
+            transition: all 0.25s;
+            position: relative;
+            min-width: 22px;
+        }
+
+        .slot.empty { background: #2a2a2a; color: #555; }
+        .slot.prefill { background: #3a5a8a; color: #9ac0f0; }
+        .slot.decode { background: #2a6a3a; color: #80d490; }
+        .slot.done { background: #3a3a3a; color: #666; }
+        .slot.waiting { background: #2a2020; color: #664444; opacity: 0.6; }
+        .slot.new-req { background: #5a3a80; color: #c090f0; }
+        .slot.active {
+            box-shadow: 0 0 8px rgba(255,255,255,0.3);
+            transform: scaleY(1.1);
+        }
+        .slot.cursor {
+            box-shadow: 0 0 0 2px #fff;
+        }
+
+        .gpu-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .gpu-util {
+            display: flex;
+            gap: 2px;
+            flex: 1;
+            min-width: 600px;
+        }
+
+        .gpu-slot {
+            height: 14px;
+            border-radius: 2px;
+            min-width: 22px;
+            transition: background 0.25s;
+        }
+        .gpu-slot.busy { background: #4a9eff; }
+        .gpu-slot.idle { background: #ff4444; opacity: 0.6; }
+
+        .time-axis {
+            display: flex;
+            gap: 2px;
+            min-width: 600px;
+            margin-left: 60px;
+        }
+        .time-tick {
+            min-width: 22px;
+            text-align: center;
+            font-size: 0.55rem;
+            color: #555;
+        }
+
+        .legend {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            justify-content: center;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.65rem;
+            color: #888;
+        }
+        .legend-swatch {
+            width: 14px; height: 14px; border-radius: 2px;
+        }
+
+        .stat-row {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        .stat {
+            text-align: center;
+        }
+        .stat-val {
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+        .stat-label { font-size: 0.6rem; color: #666; margin-top: 2px; }
+        .stat-val.good { color: #4ade80; }
+        .stat-val.bad { color: #ff6b6b; }
+
+        .controls {
+            display: flex; gap: 10px; justify-content: center; margin: 14px 0 8px;
+        }
+        .btn {
+            padding: 8px 20px; border: none; border-radius: 6px;
+            font-size: 0.8rem; font-weight: 500; cursor: pointer; transition: all 0.2s;
+        }
+        .btn.primary { background: #4a9eff; color: #fff; }
+        .btn.primary:hover { background: #5aaeff; }
+        .btn.secondary { background: #333; color: #ccc; }
+        .btn.secondary:hover { background: #444; }
+
+        .step-info {
+            background: #2a2a2a;
+            border-left: 3px solid #4a9eff;
+            padding: 8px 14px;
+            margin-bottom: 14px;
+            border-radius: 0 6px 6px 0;
+            font-size: 0.8rem;
+        }
+        .step-info .tick { color: #4a9eff; font-weight: 700; }
+        .step-info .desc { color: #ccc; margin-top: 2px; font-size: 0.75rem; }
+
+        .divider { height: 1px; background: #333; margin: 14px 0; }
+    </style>
+</head>
+<body>
+    <h1>静态批处理 vs Continuous Batching</h1>
+    <p class="subtitle">相同请求，不同调度策略的执行差异对比</p>
+
+    <div class="controls">
+        <button class="btn secondary" onclick="prevTick()">上一步</button>
+        <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+        <button class="btn secondary" onclick="nextTick()">下一步</button>
+        <button class="btn secondary" onclick="resetAnim()">重置</button>
+    </div>
+
+    <div class="step-info">
+        <span class="tick" id="tick-label">时刻 0</span>
+        <div class="desc" id="event-desc">初始状态：有 5 个请求等待调度</div>
+    </div>
+
+    <!-- Static Batching -->
+    <div class="panel">
+        <div class="section-title static-title">❌ 静态批处理 (Static Batching)</div>
+        <div class="timeline-wrap">
+            <div class="time-axis" id="time-axis-s"></div>
+            <div class="timeline" id="timeline-static"></div>
+            <div class="gpu-row">
+                <div class="req-label" style="font-size:0.6rem;color:#666;">GPU利用率</div>
+                <div class="gpu-util" id="gpu-static"></div>
+            </div>
+        </div>
+        <div class="stat-row">
+            <div class="stat">
+                <div class="stat-val bad" id="s-util">0%</div>
+                <div class="stat-label">GPU 平均利用率</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val bad" id="s-done">0</div>
+                <div class="stat-label">完成请求数</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val bad" id="s-wait">0</div>
+                <div class="stat-label">平均等待时间</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dynamic Batching -->
+    <div class="panel">
+        <div class="section-title dynamic-title">✅ Continuous Batching (vLLM v1)</div>
+        <div class="timeline-wrap">
+            <div class="time-axis" id="time-axis-d"></div>
+            <div class="timeline" id="timeline-dynamic"></div>
+            <div class="gpu-row">
+                <div class="req-label" style="font-size:0.6rem;color:#666;">GPU利用率</div>
+                <div class="gpu-util" id="gpu-dynamic"></div>
+            </div>
+        </div>
+        <div class="stat-row">
+            <div class="stat">
+                <div class="stat-val good" id="d-util">0%</div>
+                <div class="stat-label">GPU 平均利用率</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val good" id="d-done">0</div>
+                <div class="stat-label">完成请求数</div>
+            </div>
+            <div class="stat">
+                <div class="stat-val good" id="d-wait">0</div>
+                <div class="stat-label">平均等待时间</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="legend">
+        <div class="legend-item"><div class="legend-swatch" style="background:#3a5a8a"></div>Prefill (P)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#2a6a3a"></div>Decode (D)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#5a3a80"></div>新请求加入</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#3a3a3a"></div>已完成</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#2a2020"></div>空等 (GPU浪费)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>GPU忙碌</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#ff4444;opacity:0.6"></div>GPU空转</div>
+    </div>
+
+    <script>
+    // 时间轴长度
+    const TICKS = 18;
+
+    // 5 个请求: [prefill长度, decode长度]
+    // Req A: 短prompt短输出, Req B: 短prompt中输出, Req C: 长prompt短输出
+    // Req D: 中等, Req E: 新请求
+    const requests = [
+        { id: 'A', label: 'Req A', color: '#4a9eff', prefill: 2, decode: 3 },
+        { id: 'B', label: 'Req B', color: '#f0a040', prefill: 1, decode: 5 },
+        { id: 'C', label: 'Req C', color: '#f060a0', prefill: 3, decode: 2 },
+        { id: 'D', label: 'Req D', color: '#40d0f0', prefill: 2, decode: 4 },
+        { id: 'E', label: 'Req E', color: '#c090f0', prefill: 1, decode: 3 },
+    ];
+
+    // 静态批处理: Batch1=[A,B,C] 直到全部完成, 然后 Batch2=[D,E]
+    // Batch1 开始于t=0, Batch1结束于所有人完成 = max(2+3, 1+5, 3+2) = max(5,6,5) = 6
+    // Batch2 开始于t=6
+    function buildStaticTimeline() {
+        const batch1 = [0,1,2]; // A,B,C
+        const batch2 = [3,4];   // D,E
+        const timeline = [];
+
+        for (let r = 0; r < requests.length; r++) {
+            const req = requests[r];
+            const row = [];
+            const batch = batch1.includes(r) ? 1 : 2;
+            const batchStart = batch === 1 ? 0 : 6;
+            const totalSlots = req.prefill + req.decode;
+            // In static: all requests in same batch must wait for the longest one
+            const batchDuration = batch === 1 ?
+                Math.max(...batch1.map(i => requests[i].prefill + requests[i].decode)) :
+                Math.max(...batch2.map(i => requests[i].prefill + requests[i].decode));
+
+            for (let t = 0; t < TICKS; t++) {
+                if (t < batchStart) {
+                    // waiting for batch to start
+                    row.push(batch === 2 ? 'waiting' : 'empty');
+                } else if (t - batchStart < req.prefill) {
+                    row.push('prefill');
+                } else if (t - batchStart < totalSlots) {
+                    row.push('decode');
+                } else if (t - batchStart < batchDuration) {
+                    // Done but batch not finished — idle waste
+                    row.push('done');
+                } else {
+                    row.push('empty');
+                }
+            }
+            timeline.push(row);
+        }
+
+        // GPU utilization: busy if ANY req in batch is active (prefill or decode, not done-waiting)
+        const gpuUtil = [];
+        for (let t = 0; t < TICKS; t++) {
+            const b1Active = batch1.some(r => {
+                const s = timeline[r][t];
+                return s === 'prefill' || s === 'decode';
+            });
+            const b2Active = batch2.some(r => {
+                const s = timeline[r][t];
+                return s === 'prefill' || s === 'decode';
+            });
+            gpuUtil.push(b1Active || b2Active ? 'busy' : 'idle');
+        }
+
+        return { timeline, gpuUtil };
+    }
+
+    // Continuous batching: every iteration we add new requests as slots free up
+    // t=0: A(P), B(P), C(P)  -- 3 requests start
+    // t=1: A(P), B(D), C(P)  -- B done prefill (1), starts decode
+    // t=2: A(D), B(D), C(P)  -- A done prefill (2)
+    // t=3: A(D), B(D), C(D)  -- C done prefill (3), D(P) joins!
+    // t=4: A(D), B(D), C(D), D(P)
+    // t=5: A(✓), B(D), C(✓), D(D), E(P)  -- A done (2+3=5), C done (3+2=5)
+    // t=6: B(D), D(D), E(D)
+    // t=7: B(✓), D(D), E(D)  -- B done (1+5+1=7... let me recalc)
+    // Let me carefully calculate:
+    // A: prefill=2 (t=0,1), decode=3 (t=2,3,4) -> done at t=5
+    // B: prefill=1 (t=0), decode=5 (t=1,2,3,4,5) -> done at t=6
+    // C: prefill=3 (t=0,1,2), decode=2 (t=3,4) -> done at t=5
+    // When A/C finish at t=5, add D and E
+    // D: prefill=2 (t=5,6), decode=4 (t=7,8,9,10) -> done at t=11
+    // E: prefill=1 (t=5), decode=3 (t=6,7,8) -> done at t=9
+    // B still running: decode t=1..5, done at t=6
+    function buildDynamicTimeline() {
+        const timeline = [];
+        for (let r = 0; r < requests.length; r++) {
+            timeline.push(Array(TICKS).fill('empty'));
+        }
+
+        // A: t=0,1 prefill; t=2,3,4 decode; done t=5
+        for (let t=0;t<2;t++) timeline[0][t]='prefill';
+        for (let t=2;t<5;t++) timeline[0][t]='decode';
+
+        // B: t=0 prefill; t=1..5 decode; done t=6
+        timeline[1][0]='prefill';
+        for (let t=1;t<6;t++) timeline[1][t]='decode';
+
+        // C: t=0,1,2 prefill; t=3,4 decode; done t=5
+        for (let t=0;t<3;t++) timeline[2][t]='prefill';
+        for (let t=3;t<5;t++) timeline[2][t]='decode';
+
+        // D joins at t=5: prefill t=5,6; decode t=7,8,9,10; done t=11
+        for (let t=5;t<7;t++) timeline[3][t]='new-req';
+        timeline[3][5]='new-req'; timeline[3][6]='prefill';
+        // reconsider: D starts prefill at t=5
+        for (let t=5;t<7;t++) timeline[3][t]='prefill';
+        for (let t=7;t<11;t++) timeline[3][t]='decode';
+
+        // E joins at t=5: prefill t=5; decode t=6,7,8; done t=9
+        timeline[4][5]='prefill';
+        for (let t=6;t<9;t++) timeline[4][t]='decode';
+
+        // GPU busy every tick where at least one req is active
+        const gpuUtil = [];
+        for (let t=0;t<TICKS;t++) {
+            const anyActive = timeline.some(row => {
+                const s = row[t];
+                return s==='prefill'||s==='decode'||s==='new-req';
+            });
+            gpuUtil.push(anyActive ? 'busy' : 'idle');
+        }
+
+        return { timeline, gpuUtil };
+    }
+
+    const staticData = buildStaticTimeline();
+    const dynamicData = buildDynamicTimeline();
+
+    const events = [
+        { tick:0, desc:'t=0: 3 个请求 A/B/C 同时进入批次，开始 Prefill' },
+        { tick:1, desc:'t=1: 静态批处理需要等所有请求完成才能切换；动态批处理 B 完成 Prefill，立即开始 Decode' },
+        { tick:2, desc:'t=2: A 完成 Prefill (2 tokens)，进入 Decode 阶段' },
+        { tick:3, desc:'t=3: C 完成 Prefill (3 tokens)，进入 Decode 阶段；动态调度已满批' },
+        { tick:4, desc:'t=4: 3 个请求同时处于 Decode 阶段' },
+        { tick:5, desc:'t=5: A、C 完成！✅ 动态调度立即加入 D(Prefill) + E(Prefill)；静态调度 A/C 完成但 GPU 仍在等 B' },
+        { tick:6, desc:'t=6: B 完成！✅ 静态批处理第一批结束，开始调度 D/E。动态调度 E 已经完成 Prefill，开始 Decode' },
+        { tick:7, desc:'t=7: 静态批处理：D/E 开始 Prefill；动态批处理：D 开始 Decode，E 已经在 Decode' },
+        { tick:8, desc:'t=8: 静态批处理：D/E 继续 Prefill/Decode；动态批处理：稳定运行' },
+        { tick:9, desc:'t=9: E 完成！✅ 动态调度提前 2 个时间单位完成 E。静态批处理仍在处理' },
+        { tick:10, desc:'t=10: 动态调度 D 继续 Decode；静态批处理 D/E 也在运行' },
+        { tick:11, desc:'t=11: D 完成！✅ 动态调度所有请求完成。静态批处理 D 也完成' },
+        { tick:12, desc:'结束：动态调度用更少时间处理了更多有效 token，GPU 利用率显著更高' },
+    ];
+
+    let currentTick = 0;
+    let isPlaying = false;
+    let timer = null;
+
+    function buildTimeAxis(id) {
+        const el = document.getElementById(id);
+        let html = '';
+        for (let t=0;t<TICKS;t++) {
+            html += `<div class="time-tick">${t}</div>`;
+        }
+        el.innerHTML = html;
+    }
+
+    function renderTimeline(id, timeline, currentT) {
+        const container = document.getElementById(id);
+        let html = '';
+        requests.forEach((req, r) => {
+            html += `<div class="req-row">
+                <div class="req-label"><span class="req-name">${req.label}</span></div>
+                <div class="slots">`;
+            for (let t=0;t<TICKS;t++) {
+                const state = timeline[r][t];
+                let cls = 'slot ' + state;
+                if (t === currentT) cls += ' cursor';
+                let label = '';
+                if (state==='prefill') label='P';
+                else if (state==='decode') label='D';
+                else if (state==='done') label='✓';
+                else if (state==='new-req') label='P';
+                else if (state==='waiting') label='…';
+                html += `<div class="${cls}">${label}</div>`;
+            }
+            html += `</div></div>`;
+        });
+        container.innerHTML = html;
+    }
+
+    function renderGPU(id, gpuUtil, currentT) {
+        const container = document.getElementById(id);
+        let html = '';
+        for (let t=0;t<TICKS;t++) {
+            const cls = 'gpu-slot ' + gpuUtil[t] + (t===currentT?' cursor':'');
+            html += `<div class="${cls}"></div>`;
+        }
+        container.innerHTML = html;
+    }
+
+    function calcStats(timeline, gpuUtil, upToTick) {
+        const busyCount = gpuUtil.slice(0, upToTick+1).filter(s=>s==='busy').length;
+        const util = upToTick >= 0 ? Math.round(busyCount/(upToTick+1)*100) : 0;
+        let done = 0;
+        let totalWait = 0;
+        requests.forEach((req, r) => {
+            const row = timeline[r];
+            // find first active slot
+            const firstActive = row.findIndex(s => s==='prefill'||s==='new-req');
+            // find last decode slot up to currentTick
+            let lastDone = -1;
+            for (let t=0;t<=upToTick;t++) {
+                if (row[t]==='decode') lastDone = t;
+            }
+            // request complete if we've passed all decode slots
+            const totalNeeded = req.prefill + req.decode;
+            const completeAt = firstActive >= 0 ? firstActive + totalNeeded - 1 : 9999;
+            if (completeAt <= upToTick) {
+                done++;
+                totalWait += firstActive >= 0 ? firstActive : 0;
+            }
+        });
+        return { util, done, avgWait: done > 0 ? Math.round(totalWait/done*10)/10 : 0 };
+    }
+
+    function render() {
+        const t = currentTick;
+        renderTimeline('timeline-static', staticData.timeline, t);
+        renderTimeline('timeline-dynamic', dynamicData.timeline, t);
+        renderGPU('gpu-static', staticData.gpuUtil, t);
+        renderGPU('gpu-dynamic', dynamicData.gpuUtil, t);
+
+        const ss = calcStats(staticData.timeline, staticData.gpuUtil, t);
+        const ds = calcStats(dynamicData.timeline, dynamicData.gpuUtil, t);
+
+        document.getElementById('s-util').textContent = ss.util + '%';
+        document.getElementById('s-done').textContent = ss.done + '/' + requests.length;
+        document.getElementById('s-wait').textContent = ss.avgWait + ' ticks';
+        document.getElementById('d-util').textContent = ds.util + '%';
+        document.getElementById('d-done').textContent = ds.done + '/' + requests.length;
+        document.getElementById('d-wait').textContent = ds.avgWait + ' ticks';
+
+        document.getElementById('tick-label').textContent = '时刻 ' + t;
+        const evt = events.find(e => e.tick === t) || events[events.length-1];
+        document.getElementById('event-desc').textContent = evt.desc;
+    }
+
+    function nextTick() {
+        if (currentTick < TICKS-1) { currentTick++; render(); }
+    }
+    function prevTick() {
+        if (currentTick > 0) { currentTick--; render(); }
+    }
+    function togglePlay() {
+        if (isPlaying) {
+            clearInterval(timer);
+            isPlaying = false;
+            document.getElementById('playBtn').textContent = '▶ 播放';
+        } else {
+            isPlaying = true;
+            document.getElementById('playBtn').textContent = '⏸ 暂停';
+            timer = setInterval(() => {
+                if (currentTick < TICKS-1) { currentTick++; render(); }
+                else { clearInterval(timer); isPlaying = false; document.getElementById('playBtn').textContent = '▶ 播放'; }
+            }, 800);
+        }
+    }
+    function resetAnim() {
+        clearInterval(timer); isPlaying = false;
+        document.getElementById('playBtn').textContent = '▶ 播放';
+        currentTick = 0; render();
+    }
+
+    buildTimeAxis('time-axis-s');
+    buildTimeAxis('time-axis-d');
+    render();
+    </script>
+</body>
+</html>

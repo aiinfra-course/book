@@ -12,6 +12,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '技术分享', link: '/talks/01-vllm-automatic-prefix-caching/' },
+      { text: '02 · Continuous Batching', link: '/talks/02-vllm-continuous-batching/' },
     ],
 
     sidebar: [
@@ -21,6 +22,13 @@ export default defineConfig({
           {
             text: '01 · vLLM Automatic Prefix Caching',
             link: '/talks/01-vllm-automatic-prefix-caching/',
+          },
+          {
+            text: '02 · vLLM Continuous Batching',
+            link: '/talks/02-vllm-continuous-batching/',
+            items: [
+              { text: '完整文档', link: '/talks/02-vllm-continuous-batching/' },
+            ],
           },
         ],
       },

@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PagedAttention KV Cache 管理</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: 'SF Mono','Monaco','Inconsolata','Roboto Mono',monospace;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 18px;
+        }
+        h1 { font-size: 1.2rem; text-align: center; margin-bottom: 4px; color: #4a9eff; }
+        .subtitle { font-size: 0.72rem; color: #555; text-align: center; margin-bottom: 14px; }
+
+        .grid-layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .panel {
+            background: #242424;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .panel-title {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 6px;
+        }
+
+        /* KV Block Pool */
+        .block-pool {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 3px;
+        }
+        .block {
+            height: 32px;
+            border-radius: 3px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.48rem;
+            font-weight: 600;
+            transition: all 0.35s;
+            position: relative;
+            cursor: default;
+        }
+        .block .block-id { color: rgba(255,255,255,0.4); font-size: 0.42rem; }
+        .block .block-owner { font-size: 0.55rem; }
+        .block.free { background: #2a2a2a; border: 1px solid #333; }
+        .block.free .block-owner { color: #444; }
+        .block.req-a { background: #1a3050; border: 1px solid #2a5080; }
+        .block.req-a .block-owner { color: #6aa8e8; }
+        .block.req-b { background: #301a1a; border: 1px solid #603030; }
+        .block.req-b .block-owner { color: #e86a6a; }
+        .block.req-c { background: #1a301a; border: 1px solid #306030; }
+        .block.req-c .block-owner { color: #6ae86a; }
+        .block.req-d { background: #302010; border: 1px solid #604020; }
+        .block.req-d .block-owner { color: #e8a86a; }
+        .block.shared { background: #103030; border: 1px dashed #208080; }
+        .block.shared .block-owner { color: #40c0c0; }
+        .block.flash { animation: blockFlash 0.5s ease; }
+        .block.free-flash { animation: freeFlash 0.5s ease; }
+        @keyframes blockFlash {
+            0%,100% { transform: scale(1); }
+            50% { transform: scale(1.2); box-shadow: 0 0 10px rgba(255,255,255,0.4); }
+        }
+        @keyframes freeFlash {
+            0%,100% { transform: scale(1); }
+            50% { transform: scale(0.9); box-shadow: 0 0 8px rgba(255,100,100,0.5); }
+        }
+
+        /* Block table */
+        .block-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.62rem;
+        }
+        .block-table th {
+            text-align: left;
+            padding: 4px 8px;
+            color: #666;
+            border-bottom: 1px solid #333;
+            font-weight: 400;
+        }
+        .block-table td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #222;
+        }
+        .block-table tr.highlight td { background: #2a3a2a; }
+
+        .req-pill {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-size: 0.58rem;
+            font-weight: 600;
+        }
+        .pill-a { background: #1a3050; color: #6aa8e8; }
+        .pill-b { background: #301a1a; color: #e86a6a; }
+        .pill-c { background: #1a301a; color: #6ae86a; }
+        .pill-d { background: #302010; color: #e8a86a; }
+        .pill-shared { background: #103030; color: #40c0c0; }
+
+        /* Prefix cache */
+        .prefix-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px;
+            border-radius: 5px;
+            margin-bottom: 5px;
+            font-size: 0.65rem;
+        }
+        .prefix-match { background: #103030; border: 1px solid #206060; }
+        .prefix-miss { background: #2a2a2a; border: 1px solid #333; }
+        .prefix-tokens {
+            display: flex;
+            gap: 2px;
+        }
+        .ptok {
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.55rem;
+        }
+        .ptok.cached { background: #206060; color: #80e0e0; }
+        .ptok.new { background: #1a3050; color: #6aa8e8; }
+        .ptok.miss { background: #2a2a2a; color: #555; }
+
+        .cache-hit-badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.6rem;
+            font-weight: 700;
+        }
+        .hit { background: #206060; color: #80e0e0; }
+        .miss { background: #3a2020; color: #e08080; }
+
+        .step-info {
+            background: #2a2a2a;
+            border-left: 3px solid #4a9eff;
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            border-radius: 0 6px 6px 0;
+        }
+        .step-title { color: #4a9eff; font-size: 0.85rem; font-weight: 700; }
+        .step-desc { color: #ccc; font-size: 0.7rem; margin-top: 3px; }
+        .code-ref { font-size: 0.58rem; color: #4ade80; margin-top: 3px; font-family: monospace; background: #1a2a1a; padding: 4px 8px; border-radius: 3px; white-space: pre; }
+
+        .controls {
+            display: flex; gap: 10px; justify-content: center; margin: 0 0 12px;
+        }
+        .btn {
+            padding: 7px 18px; border: none; border-radius: 6px;
+            font-size: 0.78rem; font-weight: 500; cursor: pointer; transition: all 0.2s;
+        }
+        .btn.primary { background: #4a9eff; color: #fff; }
+        .btn.primary:hover { background: #5aaeff; }
+        .btn.secondary { background: #333; color: #ccc; }
+        .btn.secondary:hover { background: #444; }
+
+        .stats-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+        }
+        .stat-item {
+            flex: 1;
+            background: #1a1a1a;
+            border-radius: 5px;
+            padding: 6px 8px;
+            text-align: center;
+        }
+        .stat-v { font-size: 1.1rem; font-weight: 700; color: #4a9eff; }
+        .stat-l { font-size: 0.55rem; color: #666; margin-top: 1px; }
+
+        .legend-wrap {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+        .leg-item { display: flex; align-items: center; gap: 4px; font-size: 0.6rem; color: #777; }
+        .leg-swatch { width: 12px; height: 12px; border-radius: 2px; }
+    </style>
+</head>
+<body>
+    <h1>PagedAttention KV Cache 管理</h1>
+    <p class="subtitle">基于 vllm/v1/core/kv_cache_manager.py — block_size=16, total_blocks=32</p>
+
+    <div class="controls">
+        <button class="btn secondary" onclick="prevStep()">上一步</button>
+        <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+        <button class="btn secondary" onclick="nextStep()">下一步</button>
+        <button class="btn secondary" onclick="resetAnim()">重置</button>
+    </div>
+
+    <div class="step-info">
+        <div class="step-title" id="s-title">初始状态</div>
+        <div class="step-desc" id="s-desc">KV Cache 池完全空闲，32个 block，每个 block 存储 16 个 token 的 KV</div>
+        <div class="code-ref" id="s-code"></div>
+    </div>
+
+    <div class="grid-layout">
+        <!-- Block Pool -->
+        <div class="panel">
+            <div class="panel-title">KV Block 物理内存池 (HBM)</div>
+            <div class="block-pool" id="block-pool"></div>
+            <div class="stats-row">
+                <div class="stat-item">
+                    <div class="stat-v" id="stat-free">32</div>
+                    <div class="stat-l">空闲 blocks</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-v" id="stat-used">0</div>
+                    <div class="stat-l">已用 blocks</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-v" id="stat-util">0%</div>
+                    <div class="stat-l">内存利用率</div>
+                </div>
+            </div>
+            <div class="legend-wrap">
+                <div class="leg-item"><div class="leg-swatch" style="background:#2a2a2a;border:1px solid #333"></div>空闲</div>
+                <div class="leg-item"><div class="leg-swatch" style="background:#1a3050"></div>Req A</div>
+                <div class="leg-item"><div class="leg-swatch" style="background:#301a1a"></div>Req B</div>
+                <div class="leg-item"><div class="leg-swatch" style="background:#1a301a"></div>Req C</div>
+                <div class="leg-item"><div class="leg-swatch" style="background:#302010"></div>Req D</div>
+                <div class="leg-item"><div class="leg-swatch" style="background:#103030;border:1px dashed #208080"></div>共享(Prefix)</div>
+            </div>
+        </div>
+
+        <!-- Request Block Table -->
+        <div>
+            <div class="panel" style="margin-bottom:10px">
+                <div class="panel-title">请求 → Block 映射表 (逻辑地址 → 物理地址)</div>
+                <table class="block-table" id="block-table">
+                    <tr><th>请求</th><th>状态</th><th>Blocks (物理ID)</th><th>Tokens</th></tr>
+                </table>
+            </div>
+
+            <div class="panel">
+                <div class="panel-title">Prefix Cache 命中检测</div>
+                <div id="prefix-cache"></div>
+                <div class="stats-row" style="margin-top:8px">
+                    <div class="stat-item">
+                        <div class="stat-v" id="stat-hits" style="color:#40c0c0">0</div>
+                        <div class="stat-l">Cache Hits</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-v" id="stat-saved" style="color:#4ade80">0</div>
+                        <div class="stat-l">节省 tokens</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-v" id="stat-rate" style="color:#4ade80">0%</div>
+                        <div class="stat-l">命中率</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const TOTAL_BLOCKS = 32;
+
+    const steps = [
+        {
+            title: '初始状态',
+            desc: 'KV Cache 物理内存池初始化，32 个 block，每块容纳 16 tokens 的 K/V 矩阵',
+            code: 'kv_cache_manager.py: num_gpu_blocks=32, block_size=16',
+            blocks: {},  // reqId -> [block_ids]
+            prefixCache: [],
+            cacheHits: 0, savedTokens: 0, totalTokens: 0,
+        },
+        {
+            title: 'Req A 到达 — allocate_slots(A, 32 tokens)',
+            desc: 'Req A 有 32 个 prompt tokens，需要 ceil(32/16)=2 个 block。从空闲池分配 block #0 和 #1。',
+            code: 'allocate_slots(request, num_new_tokens=32)\n→ num_blocks = ceil(32/16) = 2\n→ free_blocks.pop() → [0, 1]',
+            blocks: { A: [0,1] },
+            prefixCache: [
+                { req:'A', tokens:['Sys',':','你','好'], hit:false, desc:'新请求，无缓存命中' }
+            ],
+            cacheHits: 0, savedTokens: 0, totalTokens: 32,
+        },
+        {
+            title: 'Req B 到达 — 相同系统 Prompt',
+            desc: 'Req B 前 16 tokens 与 A 完全相同（系统 Prompt）。Prefix Cache 命中！Block #0 直接共享，只需分配 1 个新 block。',
+            code: 'get_computed_blocks(request)\n→ hash(tokens[0:16]) == hash(A.block[0]) ✓\n→ cache HIT: reuse block #0\n→ only allocate 1 new block for new tokens',
+            blocks: { A: [0,1], B: [0,2] },  // B shares block 0
+            prefixCache: [
+                { req:'A', tokens:['Sys',':','你','好'], hit:false, desc:'A: 无缓存' },
+                { req:'B', tokens:['Sys',':','问','题'], hit:true, hitBlocks:1, desc:'B: 前16 tokens 命中! 共享 block #0' }
+            ],
+            cacheHits: 1, savedTokens: 16, totalTokens: 48,
+        },
+        {
+            title: 'Req C 到达 — 完全新 Prompt',
+            desc: 'Req C 无任何缓存命中，需要 3 个新 block (48 tokens / 16 = 3)。分配 block #3, #4, #5。',
+            code: 'get_computed_blocks(request)\n→ hash mismatch, no cache hit\n→ allocate 3 new blocks: [3, 4, 5]',
+            blocks: { A: [0,1], B: [0,2], C: [3,4,5] },
+            prefixCache: [
+                { req:'A', tokens:['Sys',':','你','好'], hit:false, desc:'A: 无缓存' },
+                { req:'B', tokens:['Sys',':','问','题'], hit:true, hitBlocks:1, desc:'B: 命中 1 block' },
+                { req:'C', tokens:['新','任','务','描述'], hit:false, desc:'C: 无缓存' }
+            ],
+            cacheHits: 1, savedTokens: 16, totalTokens: 80,
+        },
+        {
+            title: 'Decode 阶段 — 动态追加 Block',
+            desc: 'A 生成 16 个 token 后，block #1 满了，需要新 block #6 继续存 KV。按需分配，不预留空间 — PagedAttention 零碎片！',
+            code: 'allocate_slots(A, 1)  # decode step\n→ last_block full (16/16 tokens)\n→ allocate new block #6\nA.blocks = [0, 1, 6]',
+            blocks: { A: [0,1,6], B: [0,2], C: [3,4,5] },
+            prefixCache: [
+                { req:'A', tokens:['Sys',':','你','好'], hit:false, desc:'A: 无缓存' },
+                { req:'B', tokens:['Sys',':','问','题'], hit:true, hitBlocks:1, desc:'B: 命中 1 block' },
+                { req:'C', tokens:['新','任','务','描述'], hit:false, desc:'C: 无缓存' }
+            ],
+            cacheHits: 1, savedTokens: 16, totalTokens: 81,
+        },
+        {
+            title: 'Req A 完成 — free(A)',
+            desc: 'A 生成结束。kv_cache_manager.free(A) 释放 block #1 和 #6（block #0 被 B 共享，保留为 cached block 供未来请求复用）。',
+            code: 'kv_cache_manager.free(request)\n→ block #1 → free_list (no longer shared)\n→ block #6 → free_list\n→ block #0 → cached (ref_count > 0)',
+            blocks: { B: [0,2], C: [3,4,5] },
+            prefixCache: [
+                { req:'B', tokens:['Sys',':','问','题'], hit:true, hitBlocks:1, desc:'B: 继续运行，共享 block #0' },
+                { req:'C', tokens:['新','任','务','描述'], hit:false, desc:'C: 继续运行' }
+            ],
+            cacheHits: 1, savedTokens: 16, totalTokens: 81,
+            freedBlocks: [1, 6],
+        },
+        {
+            title: 'Req D 到达 — 与 A/B 相同系统 Prompt',
+            desc: 'Req D 也以相同 Sys Prompt 开头，Prefix Cache 命中 block #0，直接复用！节省 16 tokens 的计算。',
+            code: 'get_computed_blocks(D)\n→ hash(D.tokens[0:16]) == hash(block #0) ✓\n→ HIT! D.num_computed_tokens = 16\n→ D 从 token 16 开始计算，节省 Prefill',
+            blocks: { B: [0,2], C: [3,4,5], D: [0,7] },
+            prefixCache: [
+                { req:'B', tokens:['Sys',':','问','题'], hit:true, hitBlocks:1, desc:'B: 共享 block #0' },
+                { req:'C', tokens:['新','任','务','描述'], hit:false, desc:'C: 无缓存' },
+                { req:'D', tokens:['Sys',':','新','请求'], hit:true, hitBlocks:1, desc:'D: 命中! 共享 block #0，跳过 16 tokens 计算' }
+            ],
+            cacheHits: 2, savedTokens: 32, totalTokens: 97,
+        },
+        {
+            title: 'PagedAttention 优势总结',
+            desc: '非连续物理内存，无内部碎片。逻辑块表 → 物理块映射，支持 COW 共享。Prefix Cache 自动命中，跨请求复用 KV。',
+            code: '# PagedAttention 核心思想:\n# 1. 逻辑连续，物理分散 — 零碎片\n# 2. block 级 hash → 跨请求 KV 共享\n# 3. 按需分配，不预留 max_tokens 空间',
+            blocks: { B: [0,2], C: [3,4,5], D: [0,7] },
+            prefixCache: [
+                { req:'B', tokens:['Sys',':','问','题'], hit:true, hitBlocks:1, desc:'共享 block #0' },
+                { req:'C', tokens:['新','任','务','描述'], hit:false, desc:'独享 3 blocks' },
+                { req:'D', tokens:['Sys',':','新','请求'], hit:true, hitBlocks:1, desc:'共享 block #0' }
+            ],
+            cacheHits: 2, savedTokens: 32, totalTokens: 97,
+        },
+    ];
+
+    let currentStep = 0;
+    let isPlaying = false;
+    let timer = null;
+
+    function renderBlockPool(step) {
+        const pool = document.getElementById('block-pool');
+        // Figure out which blocks belong to whom
+        const ownership = {};
+        const isShared = {};
+        for (const [req, blocks] of Object.entries(step.blocks || {})) {
+            for (const bid of blocks) {
+                if (ownership[bid]) {
+                    isShared[bid] = true;
+                }
+                ownership[bid] = req;
+            }
+        }
+        // freedBlocks: blocks just freed
+        const freed = step.freedBlocks || [];
+
+        let html = '';
+        for (let i=0;i<TOTAL_BLOCKS;i++) {
+            const owner = ownership[i];
+            const shared = isShared[i];
+            let cls = 'block ';
+            let ownerLabel = '·';
+            if (owner) {
+                if (shared) {
+                    cls += 'shared';
+                    ownerLabel = '⇌';
+                } else {
+                    cls += 'req-' + owner.toLowerCase();
+                    ownerLabel = owner;
+                }
+            } else {
+                cls += 'free';
+            }
+            if (freed.includes(i)) cls += ' free-flash';
+            html += `<div class="${cls}">
+                <div class="block-id">#${i}</div>
+                <div class="block-owner">${ownerLabel}</div>
+            </div>`;
+        }
+        pool.innerHTML = html;
+
+        // Stats
+        const usedCount = Object.keys(ownership).length;
+        const freeCount = TOTAL_BLOCKS - usedCount;
+        document.getElementById('stat-free').textContent = freeCount;
+        document.getElementById('stat-used').textContent = usedCount;
+        document.getElementById('stat-util').textContent = Math.round(usedCount/TOTAL_BLOCKS*100) + '%';
+    }
+
+    function renderBlockTable(step) {
+        const table = document.getElementById('block-table');
+        const rows = [['请求','状态','Blocks (物理ID)','Tokens']];
+        const reqColors = {A:'pill-a', B:'pill-b', C:'pill-c', D:'pill-d'};
+        for (const [req, blocks] of Object.entries(step.blocks || {})) {
+            const col = reqColors[req] || 'pill-a';
+            const tokens = blocks.length * 16;
+            rows.push([
+                `<span class="req-pill ${col}">${req}</span>`,
+                'RUNNING',
+                blocks.map(b=>`<span style="color:#888">#${b}</span>`).join(', '),
+                tokens + ' tokens'
+            ]);
+        }
+        table.innerHTML = '<tr><th>请求</th><th>状态</th><th>Blocks (物理ID)</th><th>Tokens</th></tr>' +
+            rows.slice(1).map(r => `<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('');
+    }
+
+    function renderPrefixCache(step) {
+        const container = document.getElementById('prefix-cache');
+        container.innerHTML = (step.prefixCache || []).map(p => {
+            const rowCls = p.hit ? 'prefix-row prefix-match' : 'prefix-row prefix-miss';
+            const tokHtml = p.tokens.map((t,i) => {
+                const isCached = p.hit && i < (p.hitBlocks||0)*4;
+                return `<span class="ptok ${isCached?'cached':'new'}">${t}</span>`;
+            }).join('');
+            return `<div class="${rowCls}">
+                <span class="cache-hit-badge ${p.hit?'hit':'miss'}">${p.hit?'HIT':'MISS'}</span>
+                <span style="font-size:0.6rem;color:#888">${p.req}</span>
+                <div class="prefix-tokens">${tokHtml}</div>
+                <span style="font-size:0.58rem;color:#666;margin-left:auto">${p.desc}</span>
+            </div>`;
+        }).join('');
+
+        document.getElementById('stat-hits').textContent = step.cacheHits || 0;
+        document.getElementById('stat-saved').textContent = (step.savedTokens || 0) + ' tok';
+        const rate = step.totalTokens > 0 ? Math.round((step.savedTokens||0)/step.totalTokens*100) : 0;
+        document.getElementById('stat-rate').textContent = rate + '%';
+    }
+
+    function render() {
+        const step = steps[currentStep];
+        document.getElementById('s-title').textContent = step.title;
+        document.getElementById('s-desc').textContent = step.desc;
+        document.getElementById('s-code').textContent = step.code || '';
+        renderBlockPool(step);
+        renderBlockTable(step);
+        renderPrefixCache(step);
+    }
+
+    function nextStep() {
+        if (currentStep < steps.length-1) { currentStep++; render(); }
+    }
+    function prevStep() {
+        if (currentStep > 0) { currentStep--; render(); }
+    }
+    function togglePlay() {
+        if (isPlaying) {
+            clearInterval(timer); isPlaying = false;
+            document.getElementById('playBtn').textContent = '▶ 播放';
+        } else {
+            isPlaying = true;
+            document.getElementById('playBtn').textContent = '⏸ 暂停';
+            timer = setInterval(() => {
+                if (currentStep < steps.length-1) { currentStep++; render(); }
+                else { clearInterval(timer); isPlaying = false; document.getElementById('playBtn').textContent = '▶ 播放'; }
+            }, 2000);
+        }
+    }
+    function resetAnim() {
+        clearInterval(timer); isPlaying = false;
+        document.getElementById('playBtn').textContent = '▶ 播放';
+        currentStep = 0; render();
+    }
+
+    render();
+    </script>
+</body>
+</html>
