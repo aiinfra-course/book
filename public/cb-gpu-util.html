@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Decode 阶段 GPU 利用率问题</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'SF Mono','Monaco','Inconsolata',monospace;background:#1a1a1a;color:#fff;padding:14px;}
+h1{font-size:1.05rem;text-align:center;color:#4a9eff;margin-bottom:3px;}
+.subtitle{font-size:0.65rem;color:#555;text-align:center;margin-bottom:12px;}
+
+.controls{display:flex;gap:8px;justify-content:center;margin-bottom:10px;}
+.btn{padding:5px 14px;border:none;border-radius:5px;font-size:0.72rem;cursor:pointer;}
+.btn.primary{background:#4a9eff;color:#fff;}
+.btn.secondary{background:#2a2a2a;color:#aaa;}
+
+.step-box{
+  background:#1e1e2a;border-left:3px solid #4a9eff;
+  padding:6px 10px;border-radius:0 6px 6px 0;
+  font-size:0.7rem;color:#bbb;margin-bottom:12px;
+}
+.step-box .t{color:#4a9eff;font-weight:700;margin-right:6px;}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;}
+@media(max-width:560px){.grid{grid-template-columns:1fr;}}
+
+.panel{background:#1e1e1e;border-radius:8px;padding:12px;}
+.panel-title{font-size:0.68rem;text-transform:uppercase;letter-spacing:1px;
+  margin-bottom:10px;padding-bottom:5px;border-bottom:1px solid #2a2a2a;}
+.panel-title.bad{color:#ff8080;}
+.panel-title.good{color:#80ff80;}
+
+/* GPU meter */
+.gpu-meter{margin-bottom:12px;}
+.gpu-label{font-size:0.62rem;color:#888;margin-bottom:4px;display:flex;justify-content:space-between;}
+.gpu-bar-wrap{height:24px;background:#111;border-radius:5px;overflow:hidden;position:relative;}
+.gpu-bar{height:100%;border-radius:5px;transition:width 0.8s cubic-bezier(.4,0,.2,1);
+  display:flex;align-items:center;justify-content:flex-end;padding-right:8px;}
+.gpu-bar-text{font-size:0.7rem;font-weight:700;color:#fff;}
+
+/* Batch slots */
+.slots-title{font-size:0.6rem;color:#555;margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;}
+.slots{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:10px;}
+.slot{
+  width:28px;height:28px;border-radius:4px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:0.52rem;font-weight:700;transition:all 0.4s;
+}
+.slot.active{background:#1a3a1a;color:#4ad04a;border:1px solid #2a6a2a;}
+.slot.empty{background:#1a1a1a;color:#333;border:1px dashed #2a2a2a;}
+.slot.computing{background:#1a3050;color:#4a9eff;border:1px solid #2a5a80;
+  animation:compute 1s infinite;}
+@keyframes compute{
+  0%,100%{box-shadow:0 0 0 rgba(74,158,255,0);}
+  50%{box-shadow:0 0 8px rgba(74,158,255,0.4);}
+}
+
+/* Throughput bar */
+.throughput{
+  background:#111;border-radius:5px;padding:8px 10px;
+  font-size:0.62rem;
+}
+.tp-row{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+.tp-row:last-child{margin-bottom:0;}
+.tp-label{width:80px;color:#888;flex-shrink:0;}
+.tp-bar-wrap{flex:1;height:10px;background:#1a1a1a;border-radius:5px;overflow:hidden;}
+.tp-bar{height:100%;border-radius:5px;transition:width 0.8s;}
+.tp-num{font-size:0.62rem;font-weight:700;min-width:55px;text-align:right;}
+
+/* Memory bandwidth viz */
+.mem-viz{background:#111;border-radius:5px;padding:8px 10px;margin-bottom:8px;}
+.mem-title{font-size:0.58rem;color:#555;margin-bottom:6px;}
+.mem-row{display:flex;align-items:center;gap:6px;margin-bottom:5px;}
+.mem-row:last-child{margin-bottom:0;}
+.mem-op{font-size:0.55rem;color:#888;width:70px;}
+.mem-pulse-wrap{flex:1;height:8px;background:#1a1a1a;border-radius:4px;overflow:hidden;position:relative;}
+.mem-pulse{
+  position:absolute;top:0;left:-100%;
+  width:40%;height:100%;
+  border-radius:4px;
+  animation:memFlow 1.5s linear infinite;
+}
+.mem-pulse.read{background:linear-gradient(90deg,transparent,#4ade80,transparent);}
+.mem-pulse.write{background:linear-gradient(90deg,transparent,#4a9eff,transparent);}
+.mem-bw{font-size:0.55rem;font-weight:700;}
+
+@keyframes memFlow{0%{left:-40%;}100%{left:100%;}}
+
+.insight{
+  background:#0d1f0d;border:1px solid #1a3a1a;border-radius:6px;
+  padding:7px 10px;font-size:0.63rem;color:#80d080;line-height:1.6;
+  margin-top:8px;
+}
+.insight.bad{background:#1f0d0d;border-color:#3a1a1a;color:#d08080;}
+</style>
+</head>
+<body>
+<h1>为什么单请求 Decode 无法让 GPU 满载</h1>
+<p class="subtitle">Decode 是 memory-bound 操作，批量处理是提升利用率的唯一方案</p>
+
+<div class="controls">
+  <button class="btn secondary" onclick="prev()">◀</button>
+  <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+  <button class="btn secondary" onclick="next()">▶</button>
+  <button class="btn secondary" onclick="resetAnim()">重置</button>
+</div>
+<div class="step-box" id="step-box"><span class="t">场景 1</span>单个请求 Decode：每步只有 1 个 token，算力严重浪费</div>
+
+<div class="grid">
+  <div class="panel">
+    <div class="panel-title bad" id="left-title">❌ 单请求 Decode（batch=1）</div>
+
+    <div class="gpu-meter">
+      <div class="gpu-label"><span>GPU SM 利用率</span><span id="util-1">~5%</span></div>
+      <div class="gpu-bar-wrap">
+        <div class="gpu-bar" id="bar-1" style="width:5%;background:linear-gradient(90deg,#4a2020,#ff4444);">
+          <span class="gpu-bar-text" id="bar-text-1">5%</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="slots-title">Batch 槽位（每格 = 1 个请求）</div>
+    <div class="slots" id="slots-1"></div>
+
+    <div class="mem-viz">
+      <div class="mem-title">内存带宽操作（每 Decode step）</div>
+      <div class="mem-row">
+        <div class="mem-op">读 KV Cache</div>
+        <div class="mem-pulse-wrap"><div class="mem-pulse read" id="pulse-read-1"></div></div>
+        <div class="mem-bw" style="color:#4ade80" id="bw-read-1">~2 GB</div>
+      </div>
+      <div class="mem-row">
+        <div class="mem-op">计算（Attn+FFN）</div>
+        <div class="mem-pulse-wrap" style="background:#111">
+          <div style="width:3%;height:100%;background:#ff4444;border-radius:4px;transition:width 0.6s;" id="compute-bar-1"></div>
+        </div>
+        <div class="mem-bw" style="color:#ff6060" id="flop-1">~0.01 TFLOP</div>
+      </div>
+    </div>
+
+    <div class="throughput">
+      <div class="tp-row">
+        <div class="tp-label">有效吞吐</div>
+        <div class="tp-bar-wrap"><div class="tp-bar" id="tp-bar-1" style="width:2%;background:#ff4444;"></div></div>
+        <div class="tp-num" style="color:#ff6060" id="tp-num-1">1 tok/step</div>
+      </div>
+    </div>
+
+    <div class="insight bad" id="left-insight">
+      每步计算量：~0.01 TFLOP<br>
+      A100 峰值：312 TFLOP<br>
+      利用率 = 0.003% ← 99.997% 算力在空等显存传输
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title good" id="right-title">✅ 批量 Decode（batch=N）</div>
+
+    <div class="gpu-meter">
+      <div class="gpu-label"><span>GPU SM 利用率</span><span id="util-n">~50%</span></div>
+      <div class="gpu-bar-wrap">
+        <div class="gpu-bar" id="bar-n" style="width:50%;background:linear-gradient(90deg,#1a6020,#4ade80);">
+          <span class="gpu-bar-text" id="bar-text-n">50%</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="slots-title" id="right-slots-title">Batch 槽位（当前 batch=64）</div>
+    <div class="slots" id="slots-n"></div>
+
+    <div class="mem-viz">
+      <div class="mem-title">内存带宽操作（每 Decode step）</div>
+      <div class="mem-row">
+        <div class="mem-op">读 KV Cache</div>
+        <div class="mem-pulse-wrap"><div class="mem-pulse read" id="pulse-read-n"></div></div>
+        <div class="mem-bw" style="color:#4ade80" id="bw-read-n">~128 GB</div>
+      </div>
+      <div class="mem-row">
+        <div class="mem-op">计算（Attn+FFN）</div>
+        <div class="mem-pulse-wrap" style="background:#111">
+          <div style="width:50%;height:100%;background:#4ade80;border-radius:4px;transition:width 0.8s;" id="compute-bar-n"></div>
+        </div>
+        <div class="mem-bw" style="color:#4ade80" id="flop-n">~0.6 TFLOP</div>
+      </div>
+    </div>
+
+    <div class="throughput">
+      <div class="tp-row">
+        <div class="tp-label">有效吞吐</div>
+        <div class="tp-bar-wrap"><div class="tp-bar" id="tp-bar-n" style="width:50%;background:#4ade80;"></div></div>
+        <div class="tp-num" style="color:#4ade80" id="tp-num-n">64 tok/step</div>
+      </div>
+    </div>
+
+    <div class="insight" id="right-insight">
+      每步计算量：~0.6 TFLOP（64×）<br>
+      读取 KV Cache 一次，服务 64 个请求<br>
+      带宽开销摊薄，利用率线性提升 ✅
+    </div>
+  </div>
+</div>
+
+<script>
+const batchScenarios = [
+  { batch:1,  util:5,  bwRead:'~2 GB',   flop:'~0.01 TFLOP', tp:'1 tok/step',   tpPct:2,  computePct:3,
+    rightTitle:'批量 Decode — 先看 batch=1 做对比',
+    desc:'单个请求 Decode：每步只有 1 个 token，读 KV Cache 消耗大量带宽，但计算量极小，GPU 严重欠载',
+    insight:'每步计算量：~0.01 TFLOP\nA100 峰值：312 TFLOP\n利用率 < 1% — 99%+ 算力在空等显存传输'},
+  { batch:8,  util:12, bwRead:'~16 GB',  flop:'~0.08 TFLOP', tp:'8 tok/step',   tpPct:8,  computePct:12,
+    rightTitle:'batch=8：利用率开始提升',
+    desc:'batch=8：同时为 8 个请求做 Decode。KV Cache 一次读取，服务 8 个请求，带宽开销被摊薄',
+    insight:'计算量提升到 ~0.08 TFLOP\n带宽利用率提升，但仍然偏低\n→ 继续增大 batch'},
+  { batch:32, util:35, bwRead:'~64 GB',  flop:'~0.32 TFLOP', tp:'32 tok/step',  tpPct:32, computePct:35,
+    rightTitle:'batch=32：利用率显著提升',
+    desc:'batch=32：GPU 利用率提升到 35%，每轮 forward pass 同时产出 32 个 token，吞吐量是单请求的 32 倍',
+    insight:'计算量 ~0.32 TFLOP，开始接近 memory-bound 上限\n这就是 Continuous Batching 要维持的状态\n→ 保持 batch 尽可能大'},
+  { batch:64, util:55, bwRead:'~128 GB', flop:'~0.6 TFLOP',  tp:'64 tok/step',  tpPct:64, computePct:55,
+    rightTitle:'✅ batch=64：接近最优',
+    desc:'batch=64：GPU 利用率达到 55%，每轮产出 64 个 token。Continuous Batching 的目标就是让 batch size 始终保持在这个水平',
+    insight:'GPU 利用率 ~55%，已接近 memory-bound 理论上限\n每步计算 ~0.6 TFLOP，读取 ~128 GB KV\n批量越大，每个 token 的显存带宽成本越低 ✅'},
+  { batch:256,util:85, bwRead:'~512 GB', flop:'~2.4 TFLOP',  tp:'256 tok/step', tpPct:100,computePct:85,
+    rightTitle:'✅ batch=256：接近 GPU 峰值',
+    desc:'batch=256：GPU 利用率达到 85%，开始从 memory-bound 过渡到 compute-bound。这是 Continuous Batching 追求的终极状态',
+    insight:'利用率 ~85%，开始逼近 GPU 峰值\n单次 forward pass 产出 256 个 token\n这就是为什么 Continuous Batching 能大幅提升服务吞吐量 🚀'},
+];
+
+let cur = 0, playing = false, timer = null;
+
+function buildSlots(containerId, batch, total=64) {
+  const el = document.getElementById(containerId);
+  let html = '';
+  for(let i=0;i<total;i++){
+    if(i<batch) html+=`<div class="slot computing">${i+1}</div>`;
+    else html+=`<div class="slot empty">·</div>`;
+  }
+  el.innerHTML = html;
+}
+
+function render() {
+  const s = batchScenarios[cur];
+  const isLeft = cur === 0;
+
+  document.getElementById('step-box').innerHTML =
+    `<span class="t">场景 ${cur+1}/${batchScenarios.length}</span>${s.desc}`;
+
+  // Left panel: always batch=1
+  buildSlots('slots-1', 1, 16);
+  const b1 = batchScenarios[0];
+
+  // Right panel: current scenario
+  document.getElementById('right-title').textContent = s.rightTitle;
+  document.getElementById('right-slots-title').textContent =
+    `Batch 槽位（当前 batch=${s.batch}，共 64 格）`;
+  buildSlots('slots-n', s.batch, 64);
+
+  // GPU bars
+  document.getElementById('bar-n').style.width = s.util + '%';
+  document.getElementById('bar-n').style.background =
+    s.util > 60 ? 'linear-gradient(90deg,#1a6020,#4ade80)' :
+    s.util > 30 ? 'linear-gradient(90deg,#1a4020,#80c060)' :
+    'linear-gradient(90deg,#2a3010,#a0a040)';
+  document.getElementById('bar-text-n').textContent = s.util + '%';
+  document.getElementById('util-n').textContent = '~' + s.util + '%';
+
+  // Memory/compute
+  document.getElementById('bw-read-n').textContent = s.bwRead;
+  document.getElementById('flop-n').textContent = s.flop;
+  document.getElementById('compute-bar-n').style.width = s.computePct + '%';
+
+  // Throughput
+  document.getElementById('tp-bar-n').style.width = Math.min(s.tpPct, 100) + '%';
+  document.getElementById('tp-num-n').textContent = s.tp;
+
+  // Insight
+  document.getElementById('right-insight').innerHTML =
+    s.insight.replace(/\n/g,'<br>');
+
+  const goodColor = s.util > 50 ? '#4ade80' : s.util > 25 ? '#a0d060' : '#c0c040';
+  document.getElementById('right-insight').style.color = goodColor;
+  document.getElementById('tp-bar-n').style.background = goodColor;
+  document.getElementById('tp-num-n').style.color = goodColor;
+}
+
+function next(){if(cur<batchScenarios.length-1){cur++;render();}}
+function prev(){if(cur>0){cur--;render();}}
+function togglePlay(){
+  if(playing){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}
+  else{
+    playing=true;document.getElementById('playBtn').textContent='⏸ 暂停';
+    timer=setInterval(()=>{
+      if(cur<batchScenarios.length-1){cur++;render();}
+      else{clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}
+    },2200);
+  }
+}
+function resetAnim(){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';cur=0;render();}
+
+render();
+</script>
+</body>
+</html>

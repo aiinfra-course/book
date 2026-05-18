@@ -10,16 +10,21 @@
             font-family: 'SF Mono','Monaco','Inconsolata','Roboto Mono',monospace;
             background: #1a1a1a;
             color: #fff;
-            padding: 18px;
+            padding: 12px;
         }
         h1 { font-size: 1.2rem; text-align: center; margin-bottom: 4px; color: #4a9eff; }
         .subtitle { font-size: 0.72rem; color: #555; text-align: center; margin-bottom: 14px; }
 
         .layout {
             display: grid;
-            grid-template-columns: 220px 1fr 220px;
-            gap: 12px;
+            grid-template-columns: 180px 1fr 180px;
+            gap: 10px;
             align-items: start;
+        }
+        @media (max-width: 700px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
         }
 
         .queue-box {
@@ -320,16 +325,46 @@
     </div>
 
     <script>
-    const MAX_BUDGET = 256; // simplified scale (real=8192)
+    const MAX_BUDGET = 256;
     const TOTAL_BLOCKS = 32;
 
-    // Requests: id, label, totalTokens, color class
     const REQS = [
-        { id:'A', label:'Req A', prompt:32, decode:48, colorClass:'req-a', color:'#4a9eff' },
-        { id:'B', label:'Req B', prompt:16, decode:64, colorClass:'req-b', color:'#df6a6a' },
-        { id:'C', label:'Req C', prompt:48, decode:32, colorClass:'req-c', color:'#6adf6a' },
-        { id:'D', label:'Req D', prompt:32, decode:48, colorClass:'req-d', color:'#dfaf6a' },
-        { id:'E', label:'Req E', prompt:16, decode:48, colorClass:'req-e', color:'#af6adf' },
+        {
+            id:'A', label:'Req A',
+            promptText:'Python 列表如何去重？',
+            outputChunks:['可以用', 'set() 函数', '或 dict.fromkeys()', '来去除重复元素'],
+            prompt:32, decode:48, colorClass:'req-a', color:'#4a9eff',
+        },
+        {
+            id:'B', label:'Req B',
+            promptText:'1 + 1 等于几？',
+            outputChunks:['等于', '2。'],
+            prompt:16, decode:16, colorClass:'req-b', color:'#df6a6a',
+        },
+        {
+            id:'C', label:'Req C',
+            promptText:'写一首七言绝句，主题：春天',
+            outputChunks:['春风吹', '绿江南岸，', '晓来鸟', '鸣山更幽。', '细雨润', '物细无声。'],
+            prompt:48, decode:48, colorClass:'req-c', color:'#6adf6a',
+        },
+        {
+            id:'D', label:'Req D',
+            promptText:'解释梯度下降算法',
+            outputChunks:['梯度下降', '是优化算法，', '通过计算梯度', '来更新参数。'],
+            prompt:32, decode:48, colorClass:'req-d', color:'#dfaf6a',
+        },
+        {
+            id:'E', label:'Req E',
+            promptText:'谢谢你的帮助',
+            outputChunks:['不客气！', '随时为您服务。'],
+            prompt:16, decode:16, colorClass:'req-e', color:'#af6adf',
+        },
+        {
+            id:'F', label:'Req F',
+            promptText:'详细解释 Transformer 架构',
+            outputChunks:['Transformer 是', '基于自注意力', '机制的神经网络', '由编码器和', '解码器组成'],
+            prompt:96, decode:48, colorClass:'req-a', color:'#6adfdf',
+        },
     ];
 
     const steps = [
@@ -337,155 +372,123 @@
             title: '初始状态',
             desc: '5 个请求到达，全部进入 waiting 队列。Running 队列为空。',
             code: 'add_request() → self.waiting.append(request)',
-            iter: 0,
-            phase: null,
-            waiting: ['A','B','C','D','E'],
-            running: [],
+            iter: 0, phase: null,
+            waiting: ['A','B','C','D','E'], running: [],
             computed: {A:0,B:0,C:0,D:0,E:0},
-            budgetUsed: 0,
-            kvBlocks: {},
-            highlight: null,
-            log: null,
+            budgetUsed: 0, kvBlocks: {}, highlight: null, log: null,
+            outputs: {A:[],B:[],C:[],D:[],E:[]},
         },
         {
             title: '迭代 1 — ① schedule() 开始',
-            desc: 'token_budget = 8192。遍历 running 队列（空），然后从 waiting 取出请求。',
-            code: 'scheduler.py:329  token_budget = self.max_num_scheduled_tokens',
-            iter: 1,
-            phase: 'schedule',
-            waiting: ['A','B','C','D','E'],
-            running: [],
+            desc: 'token_budget = max_num_scheduled_tokens。先遍历 running（空），再处理 waiting 队列。两个阶段在同一个 schedule() 调用内完成。',
+            code: '# scheduler.py:329\ntoken_budget = self.max_num_scheduled_tokens\n\n# scheduler.py:345 — 先处理 running（本轮为空）\n# scheduler.py:526 — 再处理 waiting',
+            iter: 1, phase: 'schedule',
+            waiting: ['A','B','C','D','E'], running: [],
             computed: {A:0,B:0,C:0,D:0,E:0},
-            budgetUsed: 0,
-            kvBlocks: {},
-            highlight: null,
+            budgetUsed: 0, kvBlocks: {}, highlight: null,
             log: { type:'ok', msg:'[iter1] schedule() 开始，budget=256, running=0, waiting=5' },
+            outputs: {A:[],B:[],C:[],D:[],E:[]},
         },
         {
-            title: '迭代 1 — 调度 Req A 进入 Running',
-            desc: 'waiting.peek_request() 取出 A。allocate_slots(A, 32 tokens) 成功，分配 2 个 KV block。budget -= 32。',
-            code: 'scheduler.py:425  new_blocks = kv_cache_manager.allocate_slots(request, num_new_tokens)',
-            iter: 1,
-            phase: 'schedule',
-            waiting: ['B','C','D','E'],
-            running: ['A'],
+            title: '迭代 1 — 从 waiting 调度 A/B/C/D/E',
+            desc: 'waiting 无抢占，依次取出 5 个请求。get_computed_blocks() 查 prefix cache（全未命中），allocate_slots() 分配 KV blocks，加入 running。',
+            code: '# scheduler.py:572\nnew_computed_blocks, _ = kv_cache_manager.get_computed_blocks(request)\n# scheduler.py:702\nnew_blocks = kv_cache_manager.allocate_slots(request, num_new_tokens)\n# scheduler.py:765\nself.running.append(request)',
+            iter: 1, phase: 'schedule',
+            waiting: [], running: ['A','B','C','D','E'],
             computed: {A:0,B:0,C:0,D:0,E:0},
-            budgetUsed: 32,
-            kvBlocks: {A:2},
-            highlight: 'A',
-            log: { type:'ok', msg:'[iter1] Req A → running, alloc 2 blocks, budget: 256→224' },
+            budgetUsed: 144, kvBlocks: {A:2,B:1,C:3,D:2,E:1}, highlight: null,
+            log: { type:'ok', msg:'[iter1] 5 个请求进入 running，9 blocks 分配，budget: 256→112' },
+            outputs: {A:[],B:[],C:[],D:[],E:[]},
         },
         {
-            title: '迭代 1 — 调度 B、C、D、E',
-            desc: '依次调度 B(16T,1块)、C(48T,3块)、D(32T,2块)、E(16T,1块)。Budget 消耗 144，剩余 112。',
-            code: 'scheduler.py:345  while req_index < len(self.running) and token_budget > 0',
-            iter: 1,
-            phase: 'schedule',
-            waiting: [],
-            running: ['A','B','C','D','E'],
-            computed: {A:0,B:0,C:0,D:0,E:0},
-            budgetUsed: 144,
-            kvBlocks: {A:2,B:1,C:3,D:2,E:1},
-            highlight: null,
-            log: { type:'ok', msg:'[iter1] 5 个请求全部进入 running，共用 9 blocks，budget: 256→112' },
+            title: '迭代 1 — schedule() 末尾：_update_after_schedule()',
+            desc: '⚠️ 关键：num_computed_tokens 在 schedule() 返回前就已更新，而不是 GPU 运算之后！这样下一轮调度可以立即看到最新进度。',
+            code: '# scheduler.py:901 — schedule() 末尾，GPU 尚未运行\nself._update_after_schedule(scheduler_output)\n\n# _update_after_schedule() 内部:\nrequest.num_computed_tokens += num_scheduled_token\n# A: 0→32, B: 0→16, C: 0→48, D: 0→32, E: 0→16',
+            iter: 1, phase: 'schedule',
+            waiting: [], running: ['A','B','C','D','E'],
+            computed: {A:32,B:16,C:48,D:32,E:16},
+            budgetUsed: 144, kvBlocks: {A:2,B:1,C:3,D:2,E:1}, highlight: null,
+            log: { type:'ok', msg:'[iter1] _update_after_schedule: A=32,B=16,C=48,D=32,E=16（schedule内部）' },
+            outputs: {A:[],B:[],C:[],D:[],E:[]},
         },
         {
             title: '迭代 1 — ② execute_model() GPU 计算',
-            desc: 'Batch size=5，处理各请求的 Prefill tokens。GPU 执行 forward pass，计算 KV 并写入 HBM。',
-            code: 'core.py → executor.execute_model(scheduler_output)',
-            iter: 1,
-            phase: 'execute',
-            waiting: [],
-            running: ['A','B','C','D','E'],
-            computed: {A:0,B:0,C:0,D:0,E:0},
-            budgetUsed: 144,
-            kvBlocks: {A:2,B:1,C:3,D:2,E:1},
-            highlight: null,
-            log: { type:'ok', msg:'[iter1] GPU forward pass: batch_size=5, total_tokens=144' },
-        },
-        {
-            title: '迭代 1 — ③ update_from_output() 更新状态',
-            desc: 'num_computed_tokens 更新：A:0→32, B:0→16, C:0→48, D:0→32, E:0→16。A/C完成Prefill，B/D/E完成Prefill。',
-            code: 'scheduler.py:932  request.num_computed_tokens += num_scheduled_tokens',
-            iter: 1,
-            phase: 'update',
-            waiting: [],
-            running: ['A','B','C','D','E'],
+            desc: 'GPU 执行 forward pass，处理本轮 batch 中的所有 token（Prefill 阶段），计算 KV 并写入 HBM。',
+            code: '# core.py 主循环\nsched_output = scheduler.schedule()   # ← 已完成，含 _update_after_schedule\nmodel_output = executor.execute_model(sched_output)  # ← GPU 运行',
+            iter: 1, phase: 'execute',
+            waiting: [], running: ['A','B','C','D','E'],
             computed: {A:32,B:16,C:48,D:32,E:16},
-            budgetUsed: 144,
-            kvBlocks: {A:2,B:1,C:3,D:2,E:1},
-            highlight: null,
-            log: { type:'ok', msg:'[iter1] 更新 computed_tokens: A=32, B=16, C=48, D=32, E=16' },
+            budgetUsed: 144, kvBlocks: {A:2,B:1,C:3,D:2,E:1}, highlight: null,
+            log: { type:'ok', msg:'[iter1] GPU forward pass: batch_size=5, total_tokens=144，Prefill 完成' },
+            outputs: {A:[],B:[],C:[],D:[],E:[]},
         },
         {
-            title: '迭代 2 — 开始 Decode 阶段',
-            desc: '新迭代开始。每个请求 num_new_tokens = num_tokens_with_spec - num_computed_tokens = 1 (decode模式)。Budget=8192，全部运行。',
-            code: 'scheduler.py:366  num_new_tokens = request.num_tokens_with_spec + request.num_output_placeholders - request.num_computed_tokens',
-            iter: 2,
-            phase: 'schedule',
-            waiting: [],
-            running: ['A','B','C','D','E'],
+            title: '迭代 1 — ③ update_from_output() 生成第 1 个 token',
+            desc: 'GPU 采样结果返回，append_output_token_ids() 追加新 token。每个请求生成了第 1 个输出 token！',
+            code: '# scheduler.py:update_from_output\nrequest.append_output_token_ids(sampled_token_id)\n# A → "可以用"  B → "等于"\n# C → "春风吹"  D → "梯度下降"  E → "不客气！"\ncheck_stop(request)',
+            iter: 1, phase: 'update',
+            waiting: [], running: ['A','B','C','D','E'],
             computed: {A:33,B:17,C:49,D:33,E:17},
-            budgetUsed: 5,
-            kvBlocks: {A:3,B:2,C:3,D:2,E:2},
-            highlight: null,
-            log: { type:'ok', msg:'[iter2] Decode: 5个请求各生成1 token，budget_used=5' },
+            budgetUsed: 144, kvBlocks: {A:2,B:1,C:3,D:2,E:1}, highlight: null,
+            log: { type:'ok', msg:'[iter1] 各生成 1 output token：A"可以用" B"等于" C"春风吹" D"梯度下降" E"不客气！"' },
+            outputs: {A:['可以用'],B:['等于'],C:['春风吹'],D:['梯度下降'],E:['不客气！']},
         },
         {
-            title: '内存压力 — 新请求 Req F 到达',
-            desc: '新请求 F (prompt=96 tokens) 到达 waiting 队列。当前 KV blocks 已用完 28/32，Req F 需要 6 blocks，内存不足！',
-            code: 'scheduler.py:425  new_blocks = kv_cache_manager.allocate_slots(...)',
-            iter: 3,
-            phase: 'schedule',
-            waiting: ['F(new)'],
-            running: ['A','B','C','D','E'],
-            computed: {A:42,B:26,C:58,D:42,E:26},
-            budgetUsed: 5,
-            kvBlocks: {A:3,B:2,C:4,D:3,E:2},
-            highlight: 'F',
-            log: { type:'warn', msg:'[iter3] Req F 需要 6 blocks，当前仅剩 4 blocks → 触发抢占！' },
+            title: '多轮 Decode 稳定运行',
+            desc: '每轮迭代：schedule() 分配 1 new token，_update_after_schedule() 推进计数，execute_model() 运行，update_from_output() 追加 output。输出文本持续增长。',
+            code: '# 主循环（core.py）\nwhile True:\n    sched_output = scheduler.schedule()        # 含 _update_after_schedule\n    model_output = executor.execute_model(sched_output)\n    scheduler.update_from_output(model_output)',
+            iter: 5, phase: 'execute',
+            waiting: [], running: ['A','B','C','D','E'],
+            computed: {A:44,B:26,C:60,D:44,E:26},
+            budgetUsed: 5, kvBlocks: {A:3,B:2,C:4,D:3,E:2}, highlight: null,
+            log: { type:'ok', msg:'[iter5+] Decode 稳定，每轮 budget=5，输出持续增长' },
+            outputs: {A:['可以用','set() 函数'],B:['等于','2。'],C:['春风吹','绿江南岸，'],D:['梯度下降','是优化算法，'],E:['不客气！','随时为您服务。']},
         },
         {
-            title: '抢占 — _preempt_request(Req E)',
-            desc: '优先级最低/最近加入的 E 被抢占。释放 2 个 KV blocks，num_computed_tokens 重置为 0，放回 waiting 队列头部。',
-            code: 'scheduler.py:910  def _preempt_request(self, request):\n    kv_cache_manager.free(request)\n    request.num_computed_tokens = 0\n    waiting.prepend_request(request)',
-            iter: 3,
-            phase: 'schedule',
-            waiting: ['E(preempted)','F(new)'],
-            running: ['A','B','C','D'],
-            computed: {A:42,B:26,C:58,D:42,E:0},
-            budgetUsed: 5,
-            kvBlocks: {A:3,B:2,C:4,D:3},
-            highlight: 'E',
-            log: { type:'warn', msg:'[iter3] ⚡ 抢占 Req E：释放 2 blocks，E.num_computed_tokens=0，放回waiting头部' },
+            title: '内存压力 — KV 不足，触发抢占',
+            desc: 'Req F（详细解释 Transformer 架构）到达 waiting。本轮 schedule() 处理 running：A/B/C/D 分配成功，E 请求分配新 block 时 KV 池耗尽。',
+            code: '# scheduler.py:424 — 处理 running 队列时\nwhile True:\n    new_blocks = kv_cache_manager.allocate_slots(request, num_new_tokens)\n    if new_blocks is None:\n        # FCFS: 弹出 running 末尾的请求\n        preempted_req = self.running.pop()',
+            iter: 8, phase: 'schedule',
+            waiting: ['F(new)'], running: ['A','B','C','D','E'],
+            computed: {A:44,B:26,C:60,D:44,E:26},
+            budgetUsed: 4, kvBlocks: {A:3,B:2,C:4,D:3,E:2}, highlight: 'E',
+            log: { type:'warn', msg:'[iter8] Req F 到达（prompt=96）。E 分配 block 失败 → 抢占！' },
+            outputs: {A:['可以用','set() 函数'],B:['等于','2。'],C:['春风吹','绿江南岸，','晓来鸟'],D:['梯度下降','是优化算法，'],E:['不客气！','随时为您服务。']},
         },
         {
-            title: '抢占后 — Req F 成功调度',
-            desc: '空出 4 blocks，Req F 分配 6 blocks 成功（包含新释放的），加入 running。E 在 waiting 队列头部，高优先级，下轮优先调度。',
-            code: 'scheduler.py:930  self.waiting.prepend_request(request)  # 高优先级',
-            iter: 3,
-            phase: 'schedule',
-            waiting: ['E(preempted)'],
-            running: ['A','B','C','D','F(new)'],
-            computed: {A:42,B:26,C:58,D:42,E:0,F:0},
-            budgetUsed: 101,
-            kvBlocks: {A:3,B:2,C:4,D:3,F:6},
-            highlight: 'F',
-            log: { type:'ok', msg:'[iter3] Req F 成功入队，E 在 waiting 头部等待下一轮' },
+            title: '抢占 E — 已生成的 token 丢失！',
+            desc: 'FCFS 模式 running.pop() 弹出 E。free(E) 释放 KV blocks（E 生成的"不客气！随时为您服务。"丢失），num_computed_tokens=0，prepend 放回 waiting 头部。',
+            code: '# scheduler.py:910\n_preempt_request:\n    kv_cache_manager.free(request)      # KV blocks 释放\n    request.status = RequestStatus.PREEMPTED\n    request.num_computed_tokens = 0     # ⚠️ 进度清零！\n    self.waiting.prepend_request(request)',
+            iter: 8, phase: 'schedule',
+            waiting: ['E(preempted)','F(new)'], running: ['A','B','C','D'],
+            computed: {A:44,B:26,C:60,D:44,E:0},
+            budgetUsed: 4, kvBlocks: {A:3,B:2,C:4,D:3}, highlight: 'E',
+            log: { type:'warn', msg:'[iter8] ⚡ E 被抢占：KV 释放，已生成的"不客气！随时为您服务。"丢失，重新排队' },
+            outputs: {A:['可以用','set() 函数'],B:['等于','2。'],C:['春风吹','绿江南岸，','晓来鸟'],D:['梯度下降','是优化算法，'],E:[]},
+            preempted: ['E'],
         },
         {
-            title: '稳定运行 — Continuous Batching 效果',
-            desc: '每轮迭代 GPU 满负荷运行：A/B/C/D 持续 decode，F 进行 prefill，完成后立即加入更多请求。GPU 利用率 > 95%。',
-            code: '# 持续循环 — GPU 永不空等\nwhile True:\n    output = scheduler.schedule()\n    result = executor.execute_model(output)\n    scheduler.update_from_output(result)',
-            iter: 4,
-            phase: 'execute',
-            waiting: [],
-            running: ['A','B','C','D','F'],
-            computed: {A:48,B:32,C:64,D:48,E:0,F:48},
-            budgetUsed: 5,
-            kvBlocks: {A:3,B:2,C:4,D:3,F:6},
-            highlight: null,
-            log: { type:'ok', msg:'[iter4+] Continuous Batching: GPU 持续忙碌，吞吐量最大化' },
+            title: '⚠️ 抢占轮次：waiting 调度跳过，F 等下一轮',
+            desc: 'preempted_reqs=[E] 不为空，schedule() 跳过 waiting 处理。F 本轮无法进入，只有 A/B/C/D 参与 GPU 计算。',
+            code: '# scheduler.py:526\nif not preempted_reqs and self._pause_state == PauseState.UNPAUSED:\n    while self.waiting and token_budget > 0:\n        ...  # ← 本轮跳过！preempted_reqs = [E]',
+            iter: 8, phase: 'execute',
+            waiting: ['E(preempted)','F(new)'], running: ['A','B','C','D'],
+            computed: {A:45,B:27,C:61,D:45,E:0},
+            budgetUsed: 4, kvBlocks: {A:3,B:2,C:4,D:3}, highlight: null,
+            log: { type:'warn', msg:'[iter8] preempted_reqs=[E]，F 等待。GPU 运行 A/B/C/D，输出继续增长' },
+            outputs: {A:['可以用','set() 函数','或 dict.fromkeys()'],B:['等于','2。'],C:['春风吹','绿江南岸，','晓来鸟'],D:['梯度下降','是优化算法，','通过计算梯度'],E:[]},
+            preempted: ['E'],
+        },
+        {
+            title: '下一轮 — E 优先恢复，F 同轮调度',
+            desc: '迭代 9：E（PREEMPTED）在 waiting 头部，优先调度。prefix cache 命中可跳过部分 prefill。F 也在同轮获得 budget，加入 running。',
+            code: '# E 以 PREEMPTED 状态恢复\nelif request.status == RequestStatus.PREEMPTED:\n    scheduled_resumed_reqs.append(request)\n    # prefix cache 命中 → 跳过已算过的 tokens！\nnew_computed_blocks, _ = kv_cache_manager.get_computed_blocks(request)',
+            iter: 9, phase: 'schedule',
+            waiting: [], running: ['A','B','C','D','E','F(new)'],
+            computed: {A:46,B:28,C:62,D:46,E:0,F:0},
+            budgetUsed: 110, kvBlocks: {A:3,B:2,C:4,D:3,E:2,F:6}, highlight: 'E',
+            log: { type:'ok', msg:'[iter9] E 恢复（prefix cache 可加速），F 加入，6 requests 同时运行' },
+            outputs: {A:['可以用','set() 函数','或 dict.fromkeys()'],B:['等于','2。'],C:['春风吹','绿江南岸，','晓来鸟','鸣山更幽。'],D:['梯度下降','是优化算法，','通过计算梯度'],E:[],F:[]},
         },
     ];
 
@@ -497,36 +500,83 @@
     function renderQueues(step) {
         const wq = document.getElementById('waiting-queue');
         const rq = document.getElementById('running-queue');
+        const outputs = step.outputs || {};
+        const preempted = step.preempted || [];
 
-        function makeItem(id, style, computed) {
+        function makeItem(id, queueType) {
+            const isPreemptedId = id.includes('(preempted)');
+            const isNew = id.includes('(new)');
             const reqId = id.replace('(new)','').replace('(preempted)','');
-            const req = REQS.find(r=>r.id===reqId);
+            const req = REQS.find(r => r.id === reqId);
+            const comp = (step.computed || {})[reqId] || 0;
+            const isHL = step.highlight === reqId || step.highlight === id;
+            const wasPreempted = preempted.includes(reqId);
+
             if (!req) {
-                // synthetic
-                return `<div class="req-item ${style}">
-                    <div class="req-id" style="color:#c090f0">${id}</div>
-                    <div class="req-tokens">新到达</div>
+                // F(new) — not in REQS yet fully
+                const fReq = REQS.find(r => r.id === 'F');
+                return `<div class="req-item waiting-style${isHL?' highlight':''}">
+                    <div class="req-id" style="color:#6adfdf">${fReq ? fReq.label : id}</div>
+                    <div style="font-size:0.6rem;color:#555;margin:2px 0">${fReq ? fReq.promptText : '新请求'}</div>
+                    <div class="req-tokens" style="color:#4adfdf">等待调度</div>
                 </div>`;
             }
+
             const total = req.prompt + req.decode;
-            const comp = computed[reqId] || 0;
             const pct = Math.min(100, Math.round(comp/total*100));
-            const isHL = step.highlight === reqId || step.highlight === id;
-            return `<div class="req-item ${style}${isHL?' highlight':''}">
-                <div class="req-id">${req.label}</div>
-                <div style="flex:1">
-                    <div class="req-bar-wrap">
+            const outTokens = outputs[reqId] || [];
+
+            let statusLabel = queueType === 'running' ? 'RUNNING' : 'WAITING';
+            let statusColor = queueType === 'running' ? '#4ade80' : '#d09050';
+            if (isPreemptedId || wasPreempted) {
+                statusLabel = '⚡ PREEMPTED';
+                statusColor = '#ff6060';
+            }
+
+            let outputHtml = '';
+            if (wasPreempted && queueType === 'waiting') {
+                outputHtml = `<div style="font-size:0.58rem;color:#883333;margin-top:3px;background:#1f1010;border:1px dashed #442222;border-radius:3px;padding:2px 5px;">
+                    ⚠️ KV Cache 已释放，已生成内容丢失，将重新 Prefill
+                </div>`;
+            } else if (outTokens.length > 0) {
+                const tokHtml = outTokens.map((t, i) => {
+                    const isLast = i === outTokens.length - 1 && queueType === 'running';
+                    return `<span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.6rem;
+                        background:${isLast?'rgba('+hexToRgb(req.color)+',0.25)':'rgba('+hexToRgb(req.color)+',0.12)'};
+                        color:${req.color};margin:1px;">${t}</span>`;
+                }).join('');
+                outputHtml = `<div style="margin-top:3px;display:flex;flex-wrap:wrap;gap:1px;">${tokHtml}</div>`;
+            } else if (queueType === 'running' && comp > 0 && comp <= req.prompt) {
+                outputHtml = `<div style="font-size:0.58rem;color:#4a7aaa;margin-top:2px;">Prefill 进行中…</div>`;
+            }
+
+            return `<div class="req-item ${queueType==='running'?'running-style':'waiting-style'}${isHL?' highlight':''}">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+                    <div class="req-id" style="color:${req.color}">${req.label}</div>
+                    <span style="font-size:0.55rem;padding:1px 5px;border-radius:3px;background:#1a1a1a;color:${statusColor}">${statusLabel}</span>
+                </div>
+                <div style="font-size:0.6rem;color:#555;margin-bottom:3px;">▶ ${req.promptText}</div>
+                ${outputHtml}
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                    <div class="req-bar-wrap" style="flex:1">
                         <div class="req-bar" style="width:${pct}%;background:${req.color}"></div>
                     </div>
-                    <div class="req-tokens">${comp}/${total} tokens</div>
+                    <div class="req-tokens">${comp}/${total}</div>
                 </div>
             </div>`;
         }
 
-        wq.innerHTML = step.waiting.map(id => makeItem(id, 'waiting-style', step.computed)).join('') ||
+        wq.innerHTML = step.waiting.map(id => makeItem(id, 'waiting')).join('') ||
             '<div style="color:#444;font-size:0.65rem;text-align:center;padding:10px">空</div>';
-        rq.innerHTML = step.running.map(id => makeItem(id, 'running-style', step.computed)).join('') ||
+        rq.innerHTML = step.running.map(id => makeItem(id, 'running')).join('') ||
             '<div style="color:#444;font-size:0.65rem;text-align:center;padding:10px">空</div>';
+    }
+
+    function hexToRgb(hex) {
+        const r = parseInt(hex.slice(1,3),16);
+        const g = parseInt(hex.slice(3,5),16);
+        const b = parseInt(hex.slice(5,7),16);
+        return `${r},${g},${b}`;
     }
 
     function renderPhase(step) {

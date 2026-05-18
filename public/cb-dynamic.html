@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Continuous Batching</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'SF Mono','Monaco',monospace;background:#1a1a1a;color:#fff;padding:14px;}
+h1{font-size:1.05rem;text-align:center;color:#4ade80;margin-bottom:3px;}
+.subtitle{font-size:0.65rem;color:#555;text-align:center;margin-bottom:10px;}
+
+.controls{display:flex;gap:8px;justify-content:center;margin-bottom:10px;}
+.btn{padding:6px 14px;border:none;border-radius:5px;font-size:0.72rem;cursor:pointer;}
+.btn.primary{background:#4a9eff;color:#fff;}
+.btn.secondary{background:#2a2a2a;color:#aaa;}
+
+.event{background:#0d1f0d;border-left:3px solid #4ade80;padding:6px 10px;
+  border-radius:0 5px 5px 0;font-size:0.7rem;color:#bbb;margin-bottom:10px;min-height:28px;}
+.event .t{color:#4ade80;font-weight:700;margin-right:6px;}
+
+.cards{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;}
+
+.card{border-radius:7px;padding:9px 11px;border:1px solid transparent;transition:all 0.3s;}
+.card.active{background:#1a2a1a;border-color:#2a5a2a;}
+.card.new-join{background:#0f2a1a;border:1px solid #2a8a5a;animation:newCard 0.4s ease;}
+.card.done{background:#141414;border-color:#222;opacity:0.6;}
+.card.idle{background:#131313;border:1px dashed #222;opacity:0.3;}
+
+@keyframes newCard{
+  0%{transform:scale(0.97);box-shadow:0 0 12px rgba(74,222,128,0.3);}
+  100%{transform:scale(1);}
+}
+
+.card-head{display:flex;align-items:center;gap:7px;margin-bottom:4px;}
+.card-name{font-size:0.7rem;font-weight:700;}
+.badge{font-size:0.52rem;padding:1px 5px;border-radius:3px;font-weight:600;}
+.badge-prefill{background:#1a3050;color:#6aaae0;}
+.badge-decode{background:#1a3a1a;color:#5ad07a;}
+.badge-done{background:#252525;color:#666;}
+.badge-new{background:#0f3a28;color:#4adaaa;border:1px solid #1a6a4a;}
+
+.prompt{font-size:0.6rem;color:#666;margin-bottom:3px;}
+.output-area{display:flex;flex-wrap:wrap;gap:3px;min-height:18px;}
+.tok{padding:1px 5px;border-radius:3px;font-size:0.6rem;}
+.tok.cur{animation:tokIn 0.3s ease;}
+@keyframes tokIn{0%{opacity:0;transform:translateY(3px);}100%{opacity:1;}}
+.placeholder{font-size:0.6rem;color:#333;font-style:italic;}
+
+.new-msg{font-size:0.58rem;color:#2a9a6a;background:#0a2018;
+  border:1px solid #1a5a3a;border-radius:3px;padding:2px 6px;margin-top:4px;display:inline-block;}
+
+.prog{height:3px;background:#222;border-radius:2px;margin-top:5px;}
+.prog-bar{height:3px;border-radius:2px;transition:width 0.3s;}
+
+/* Timeline */
+.tl-section{background:#0d1a0d;border-radius:7px;padding:10px;margin-bottom:10px;}
+.tl-title{font-size:0.6rem;color:#2a6a3a;text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;}
+.tl-axis{display:flex;margin-left:52px;gap:2px;margin-bottom:3px;}
+.tl-t{width:24px;text-align:center;font-size:0.48rem;color:#444;flex-shrink:0;}
+.tl-t.cur{color:#4ade80;font-weight:700;}
+.tl-row{display:flex;align-items:center;gap:4px;margin-bottom:3px;}
+.tl-label{width:48px;font-size:0.55rem;text-align:right;flex-shrink:0;}
+.tl-slots{display:flex;gap:2px;}
+.tl-slot{width:24px;height:20px;border-radius:3px;display:flex;align-items:center;
+  justify-content:center;font-size:0.48rem;font-weight:700;flex-shrink:0;}
+.tl-slot.prefill{background:#1a3050;color:#5a8ac0;}
+.tl-slot.decode{background:#1a3a1a;color:#5ab060;}
+.tl-slot.new-in{background:#0f3a28;color:#3abaa0;border:1px solid #1a6a4a;}
+.tl-slot.empty{background:#111;color:#222;}
+.tl-slot.done{background:#141a14;color:#2a4a2a;}
+.tl-slot.cur-tick{outline:2px solid rgba(255,255,255,0.5);outline-offset:-2px;}
+.gpu-title{font-size:0.6rem;color:#4a8a4a;margin-bottom:5px;}
+.gpu-bar-wrap{height:18px;background:#0a0f0a;border-radius:4px;overflow:hidden;margin-bottom:4px;}
+.gpu-bar{height:100%;display:flex;align-items:center;padding-left:8px;
+  font-size:0.6rem;font-weight:700;color:#fff;transition:width 0.6s,background 0.6s;}
+.gpu-note{font-size:0.58rem;color:#4a8a5a;text-align:center;}
+
+.batch-info{display:flex;gap:8px;margin-bottom:8px;font-size:0.62rem;color:#888;}
+.bi{background:#1a2a1a;border-radius:4px;padding:4px 8px;}
+.bi span{font-weight:700;color:#4ade80;}
+</style>
+</head>
+<body>
+<h1>Continuous Batching（迭代级调度）</h1>
+<p class="subtitle">请求完成即补充 — GPU 永不空等</p>
+
+<div class="controls">
+  <button class="btn secondary" onclick="prev()">◀</button>
+  <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+  <button class="btn secondary" onclick="next()">▶</button>
+  <button class="btn secondary" onclick="resetAnim()">重置</button>
+</div>
+
+<div class="event" id="event"><span class="t">t=0</span>A/B/C 开始 Prefill，D/E 在 waiting 等待，随时准备</div>
+
+<div class="batch-info">
+  <div class="bi">Running: <span id="running-count">3</span> 个请求</div>
+  <div class="bi">完成: <span id="done-count">0</span>/5</div>
+  <div class="bi">GPU 有效利用率: <span id="util-val">100%</span></div>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="tl-section">
+  <div class="tl-title">时序图 — 每格代表 1 个 iteration（P=Prefill D=Decode ⚡=新加入）</div>
+  <div class="tl-axis" id="tl-axis"></div>
+  <div id="tl-rows"></div>
+</div>
+
+<div class="gpu-section">
+  <div class="gpu-title">GPU 利用率（始终保持满载）</div>
+  <div class="gpu-bar-wrap">
+    <div class="gpu-bar" id="gpu-bar" style="width:100%;background:linear-gradient(90deg,#1a6020,#4ade80);">100%</div>
+  </div>
+  <div class="gpu-note" id="gpu-note">3 个请求同时运行</div>
+</div>
+
+<script>
+const TICKS = 8;
+// A: P=0, D=1, done=2+
+// B: P=0, D=1..3, done=4+
+// C: P=0, D=1..7
+// D: empty=0..1, new-in=2, D=3..5, done=6+
+// E: empty=0..3, new-in=4, D=5..6, done=7
+const FULL_TL = {
+  A: ['prefill','decode','done','done','done','done','done','done'],
+  B: ['prefill','decode','decode','decode','done','done','done','done'],
+  C: ['prefill','decode','decode','decode','decode','decode','decode','decode'],
+  D: ['empty','empty','new-in','decode','decode','decode','done','done'],
+  E: ['empty','empty','empty','empty','new-in','decode','decode','done'],
+};
+const TL_LABEL = {prefill:'P',decode:'D','new-in':'⚡',done:'✓',empty:''};
+
+function renderTimeline(curT) {
+  let axHtml='';
+  for(let t=0;t<TICKS;t++) axHtml+=`<div class="tl-t${t===curT?' cur':''}">${t}</div>`;
+  document.getElementById('tl-axis').innerHTML=axHtml;
+
+  let rowHtml='';
+  REQS.forEach(req=>{
+    const row=FULL_TL[req.id];
+    rowHtml+=`<div class="tl-row">
+      <div class="tl-label" style="color:${req.color}">${req.label}</div>
+      <div class="tl-slots">`;
+    for(let t=0;t<TICKS;t++){
+      const s=row[t]||'empty';
+      rowHtml+=`<div class="tl-slot ${s}${t===curT?' cur-tick':''}">${TL_LABEL[s]||''}</div>`;
+    }
+    rowHtml+=`</div></div>`;
+  });
+  document.getElementById('tl-rows').innerHTML=rowHtml;
+}
+
+const REQS = [
+  {id:'A',label:'Req A',prompt:'Q: 2+3=?',       color:'#4a9eff',outputChunks:['5'],                     prefill:1,decode:1},
+  {id:'B',label:'Req B',prompt:'Q: 写一句鼓励的话', color:'#f0a040',outputChunks:['加油！','你一定','可以的！'],  prefill:1,decode:3},
+  {id:'C',label:'Req C (长)',prompt:'Q: 介绍中国四大名著',color:'#f06080',outputChunks:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],prefill:1,decode:7},
+  {id:'D',label:'Req D',prompt:'Q: Python 如何排序？',color:'#5ad0a0',outputChunks:['用sorted()','或list.sort()','实现'],prefill:1,decode:3},
+  {id:'E',label:'Req E',prompt:'Q: 谢谢你',       color:'#a05ad0',outputChunks:['不客气！','随时为您服务。'],    prefill:1,decode:2},
+];
+
+const steps = [
+  {t:0,  event:'t=0  A/B/C 同时开始 Prefill。D/E 在 waiting 队列待命',
+   visible:['A','B','C'],states:{A:'prefill',B:'prefill',C:'prefill'},
+   outputs:{A:[],B:[],C:[],D:[],E:[]},gpu:100,note:'3 请求 Prefill，满载',running:3,done:0},
+  {t:1,  event:'t=1  A/B/C 进入 Decode，各生成第 1 个 token',
+   visible:['A','B','C'],states:{A:'decode',B:'decode',C:'decode'},
+   outputs:{A:['5'],B:['加油！'],C:['四大名著'],D:[],E:[]},gpu:100,note:'3 请求 Decode，满载',running:3,done:0},
+  {t:2,  event:'t=2  ✅ A 完成！立刻从 waiting 取出 D，D 开始 Prefill——GPU 没有空过一个 tick',
+   visible:['A','B','C','D'],states:{A:'done',B:'decode',C:'decode',D:'new'},
+   outputs:{A:['5'],B:['加油！','你一定'],C:['四大名著','分别是'],D:[],E:[]},gpu:100,note:'A 完成，D 立刻填入，3 请求继续满载',running:3,done:1},
+  {t:3,  event:'t=3  D 完成 Prefill，开始 Decode。B/C 继续生成',
+   visible:['A','B','C','D'],states:{A:'done',B:'decode',C:'decode',D:'decode'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》'],D:['用sorted()'],E:[]},gpu:100,note:'3 请求同时 Decode',running:3,done:1},
+  {t:4,  event:'t=4  ✅ B 完成！立刻从 waiting 取出 E，E 开始 Prefill',
+   visible:['B','C','D','E'],states:{B:'done',C:'decode',D:'decode',E:'new'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》'],D:['用sorted()','或list.sort()'],E:[]},gpu:100,note:'B 完成，E 立刻填入，3 请求继续',running:3,done:2},
+  {t:5,  event:'t=5  E 进入 Decode。C/D/E 三个同时生成，GPU 依然满载',
+   visible:['C','D','E'],states:{C:'decode',D:'decode',E:'decode'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》'],D:['用sorted()','或list.sort()','实现'],E:['不客气！']},gpu:100,note:'C/D/E 同时 Decode',running:3,done:2},
+  {t:6,  event:'t=6  ✅ D 完成！✅ E 完成！C 继续最后几步 Decode',
+   visible:['C','D','E'],states:{C:'decode',D:'done',E:'done'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》'],D:['用sorted()','或list.sort()','实现'],E:['不客气！','随时为您服务。']},gpu:33,note:'只剩 C，D/E 已完成',running:1,done:4},
+  {t:7,  event:'t=7  ✅ C 完成！全部 5 个请求完成。总用时 7 ticks，比静态批处理快 4 ticks',
+   visible:['A','B','C','D','E'],states:{A:'done',B:'done',C:'done',D:'done',E:'done'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],D:['用sorted()','或list.sort()','实现'],E:['不客气！','随时为您服务。']},gpu:0,note:'✅ 全部完成！7 ticks（静态需要 11 ticks）',running:0,done:5},
+];
+
+let cur=0,playing=false,timer=null;
+
+function render(){
+  const s=steps[cur];
+  document.getElementById('event').innerHTML=`<span class="t">t=${s.t}</span>${s.event}`;
+  document.getElementById('running-count').textContent=s.running;
+  document.getElementById('done-count').textContent=s.done;
+  document.getElementById('util-val').textContent=s.gpu+'%';
+
+  let html='';
+  s.visible.forEach(rid=>{
+    const req=REQS.find(r=>r.id===rid);
+    const st=s.states[rid]||'done';
+    const out=s.outputs[rid]||[];
+    let cls='card ',badge='',extra='';
+    if(st==='prefill'){cls+='active';badge=`<span class="badge badge-prefill">Prefill</span>`;}
+    else if(st==='decode'){cls+='active';badge=`<span class="badge badge-decode">Decode</span>`;}
+    else if(st==='new'){cls+='new-join';badge=`<span class="badge badge-new">⚡ 刚加入</span>`;
+      extra=`<div class="new-msg">前一个请求完成后立刻填入</div>`;}
+    else{cls+='done';badge=`<span class="badge badge-done">✓ 完成</span>`;}
+
+    const total=req.prefill+req.decode;
+    const comp=st==='prefill'||st==='new'?req.prefill:st==='done'?total:req.prefill+out.length;
+    const pct=Math.round(comp/total*100);
+    const tokHtml=out.length>0?out.map((t,i)=>{
+      const isCur=i===out.length-1&&(st==='decode'||st==='new');
+      return `<span class="tok${isCur?' cur':''}" style="background:${req.color}18;color:${req.color}">${t}</span>`;
+    }).join(''):`<span class="placeholder">${st==='prefill'||st==='new'?'计算中…':'—'}</span>`;
+
+    html+=`<div class="${cls}">
+      <div class="card-head"><span class="card-name" style="color:${req.color}">${req.label}</span>${badge}</div>
+      <div class="prompt">▶ ${req.prompt}</div>
+      <div class="output-area">${tokHtml}</div>
+      <div class="prog"><div class="prog-bar" style="width:${pct}%;background:${req.color}"></div></div>
+      ${extra}
+    </div>`;
+  });
+  document.getElementById('cards').innerHTML=html;
+
+  const gc=s.gpu>60?'linear-gradient(90deg,#1a6020,#4ade80)':s.gpu>0?'linear-gradient(90deg,#304010,#a0d040)':'#2a2a2a';
+  document.getElementById('gpu-bar').style.width=s.gpu+'%';
+  document.getElementById('gpu-bar').style.background=gc;
+  document.getElementById('gpu-bar').textContent=s.gpu+'%';
+  document.getElementById('gpu-note').textContent=s.note;
+  renderTimeline(s.t);
+}
+
+function next(){if(cur<steps.length-1){cur++;render();}}
+function prev(){if(cur>0){cur--;render();}}
+function togglePlay(){
+  if(playing){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}
+  else{playing=true;document.getElementById('playBtn').textContent='⏸ 暂停';
+    timer=setInterval(()=>{if(cur<steps.length-1){cur++;render();}else{clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}},1300);}
+}
+function resetAnim(){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';cur=0;render();}
+render();
+</script>
+</body>
+</html>

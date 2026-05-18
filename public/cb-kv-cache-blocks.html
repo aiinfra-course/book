@@ -10,7 +10,7 @@
             font-family: 'SF Mono','Monaco','Inconsolata','Roboto Mono',monospace;
             background: #1a1a1a;
             color: #fff;
-            padding: 18px;
+            padding: 12px;
         }
         h1 { font-size: 1.2rem; text-align: center; margin-bottom: 4px; color: #4a9eff; }
         .subtitle { font-size: 0.72rem; color: #555; text-align: center; margin-bottom: 14px; }
@@ -19,6 +19,9 @@
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 12px;
+        }
+        @media (max-width: 680px) {
+            .grid-layout { grid-template-columns: 1fr; }
         }
 
         .panel {

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM v0 调度架构</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'SF Mono','Monaco',monospace;background:#1a1a1a;color:#fff;padding:14px;}
+h1{font-size:1.05rem;text-align:center;color:#ff8080;margin-bottom:3px;}
+.subtitle{font-size:0.65rem;color:#555;text-align:center;margin-bottom:10px;}
+.controls{display:flex;gap:8px;justify-content:center;margin-bottom:10px;}
+.btn{padding:6px 14px;border:none;border-radius:5px;font-size:0.72rem;cursor:pointer;}
+.btn.primary{background:#4a9eff;color:#fff;}
+.btn.secondary{background:#2a2a2a;color:#aaa;}
+.event{background:#1f1010;border-left:3px solid #ff6060;padding:7px 11px;
+  border-radius:0 5px 5px 0;font-size:0.7rem;color:#bbb;margin-bottom:12px;}
+.event .t{color:#ff8080;font-weight:700;margin-right:6px;}
+
+/* Three queues */
+.queues{display:flex;align-items:flex-start;gap:0;margin-bottom:12px;}
+.queue{background:#1e1e1e;border-radius:8px;padding:10px;flex:1;}
+.queue-title{font-size:0.62rem;text-transform:uppercase;letter-spacing:1px;
+  margin-bottom:8px;padding-bottom:5px;border-bottom:1px solid #2a2a2a;}
+.q-waiting .queue-title{color:#d09050;}
+.q-running .queue-title{color:#6080c0;}
+.q-swapped .queue-title{color:#c050a0;}
+.q-waiting{border:1px solid #3a2010;}
+.q-running{border:1px solid #102040;}
+.q-swapped{border:1px solid #2a1030;}
+
+.arrow-col{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:0 6px;gap:3px;min-width:38px;}
+.arr{font-size:1.1rem;color:#444;}
+.arr-label{font-size:0.5rem;color:#444;text-align:center;}
+.arr.active{color:#ff8080;}
+.arr-label.active{color:#ff8080;}
+
+.req-pill{display:inline-block;padding:3px 8px;border-radius:10px;
+  font-size:0.62rem;font-weight:700;margin:2px;transition:all 0.3s;}
+.phase-row{display:flex;align-items:center;gap:5px;margin-top:4px;}
+.phase-badge{font-size:0.5rem;padding:1px 5px;border-radius:3px;font-weight:600;}
+.pb-prefill{background:#1a3050;color:#6aaae0;}
+.pb-decode{background:#1a3a1a;color:#5ad07a;}
+.pb-swap{background:#2a1030;color:#c060d0;}
+
+.warning-box{
+  background:#1f1010;border:1px solid #4a2020;border-radius:6px;
+  padding:8px 10px;font-size:0.63rem;color:#d08080;margin-bottom:10px;line-height:1.6;
+}
+
+.swap-flow{
+  background:#150a1a;border:1px solid #3a1040;border-radius:6px;
+  padding:8px 10px;margin-bottom:10px;
+}
+.swap-title{font-size:0.6rem;color:#884488;margin-bottom:6px;}
+.swap-row{display:flex;align-items:center;gap:8px;}
+.mem-box{padding:4px 10px;border-radius:4px;font-size:0.6rem;font-weight:700;text-align:center;}
+.gpu-mem{background:#1a2a3a;color:#4a9eff;border:1px solid #2a4a6a;}
+.cpu-mem{background:#2a2a1a;color:#d0c050;border:1px solid #4a4a1a;}
+.swap-arr{font-size:1.2rem;color:#663366;}
+.swap-note{font-size:0.58rem;color:#664466;flex:1;}
+.swap-speed{font-size:0.62rem;font-weight:700;color:#ff6060;}
+.empty-note{color:#444;font-size:0.6rem;padding:4px 0;}
+</style>
+</head>
+<body>
+<h1>vLLM v0 — 三队列 + 显式阶段分离</h1>
+<p class="subtitle">Prefill 和 Decode 不能共存于同一 batch，抢占需要 PCIe Swap</p>
+
+<div class="controls">
+  <button class="btn secondary" onclick="prev()">◀</button>
+  <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+  <button class="btn secondary" onclick="next()">▶</button>
+  <button class="btn secondary" onclick="resetAnim()">重置</button>
+</div>
+<div class="event" id="event"><span class="t">场景 1</span>初始：A 在 Prefill，B 在 Decode，C 在 waiting</div>
+
+<div class="queues">
+  <div class="queue q-waiting">
+    <div class="queue-title">⏳ WAITING</div>
+    <div id="q-waiting"></div>
+  </div>
+  <div class="arrow-col">
+    <div class="arr" id="arr1">→</div>
+    <div class="arr-label" id="arr1-label">调度</div>
+  </div>
+  <div class="queue q-running" style="flex:1.4">
+    <div class="queue-title">⚙️ RUNNING</div>
+    <div id="q-running"></div>
+    <div style="font-size:0.52rem;color:#884444;margin-top:8px;padding-top:6px;border-top:1px solid #2a2a2a;">
+      ⚠️ 同一 batch 内 Prefill 和 Decode 不能共存
+    </div>
+  </div>
+  <div class="arrow-col">
+    <div class="arr" id="arr2">→</div>
+    <div class="arr-label" id="arr2-label">抢占</div>
+  </div>
+  <div class="queue q-swapped">
+    <div class="queue-title">💾 SWAPPED</div>
+    <div id="q-swapped"></div>
+    <div style="font-size:0.5rem;color:#553355;margin-top:6px;">KV 已写入 CPU</div>
+  </div>
+</div>
+
+<div class="swap-flow" id="swap-flow">
+  <div class="swap-title">PCIe KV Cache 传输</div>
+  <div class="swap-row">
+    <div class="mem-box gpu-mem">GPU HBM<br><span style="font-size:0.5rem">~2 TB/s</span></div>
+    <div class="swap-arr" id="swap-dir">⇄</div>
+    <div class="mem-box cpu-mem">CPU DRAM<br><span style="font-size:0.5rem">~100 GB/s</span></div>
+    <div class="swap-note">
+      <div id="swap-msg">PCIe 带宽：~16 GB/s</div>
+      <div class="swap-speed">比 HBM 慢 100×</div>
+    </div>
+  </div>
+</div>
+
+<div class="warning-box" id="warning"></div>
+
+<script>
+const REQS={
+  A:{label:'Req A',color:'#4a9eff'},
+  B:{label:'Req B',color:'#f0a040'},
+  C:{label:'Req C',color:'#f06080'},
+};
+
+function pill(id,extra=''){
+  const r=REQS[id]||{label:id,color:'#888'};
+  return `<span class="req-pill" style="background:${r.color}20;color:${r.color};border:1px solid ${r.color}40">${r.label}${extra}</span>`;
+}
+
+const steps=[
+  {
+    event:'场景 1  A 在做 Prefill，B 在做 Decode。注意：它们不能在同一 batch！',
+    waiting:[],
+    running:[{id:'A',phase:'prefill'},{id:'B',phase:'decode'}],
+    swapped:[],
+    swapActive:false,swapDir:'⇄',swapMsg:'KV Cache 传输通道（空闲）',
+    warning:'⚠️ 问题：A(Prefill) 和 B(Decode) 在 running 队列中，但它们不能同一轮处理。\n调度器需要分批执行，A 的 Prefill 这轮先跑，B 的 Decode 只能等下一轮。',
+  },
+  {
+    event:'场景 2  新 Prefill 请求 C 到达。v0 规定当前 batch 只能是 Prefill，B 被迫中断等待',
+    waiting:[],
+    running:[{id:'A',phase:'prefill'},{id:'C',phase:'prefill'}],
+    swapped:[{id:'B',phase:'swap'}],
+    swapActive:true,swapDir:'→',swapMsg:'B 的 KV Cache 正在写出到 CPU',
+    warning:'⚠️ Prefill Bubble：C 需要做 Prefill，当前 batch 切换为纯 Prefill 模式。\nB 被抢占，其 KV Cache 通过 PCIe 写出到 CPU DRAM（~16 GB/s）。\nB 在等待期间完全停滞，增加了响应延迟。',
+  },
+  {
+    event:'场景 3  A/C Prefill 完成后，B 需要从 CPU 把 KV Cache 传回 GPU，才能继续 Decode',
+    waiting:[],
+    running:[{id:'A',phase:'decode'},{id:'C',phase:'decode'}],
+    swapped:[{id:'B',phase:'swap'}],
+    swapActive:true,swapDir:'←',swapMsg:'B 的 KV Cache 正在从 CPU 传回 GPU',
+    warning:'⚠️ Swap 回传：B 的 KV Cache 需要再一次通过 PCIe 传回 GPU（又一次 ~16 GB/s 的慢操作）。\n往返 PCIe 传输：写出 + 读回，双倍延迟。\n传输期间 A/C 在 Decode，B 无法参与。',
+  },
+  {
+    event:'场景 4  B 的 KV 传回后，B 重新加入 running 做 Decode。但已经损失了大量时间',
+    waiting:[],
+    running:[{id:'A',phase:'decode'},{id:'B',phase:'decode'},{id:'C',phase:'decode'}],
+    swapped:[],
+    swapActive:false,swapDir:'⇄',swapMsg:'传输完成，B 恢复运行',
+    warning:'总结：v0 的代价\n1. Prefill/Decode 不能同时跑 → Prefill Bubble，Decode 请求被迫暂停\n2. 抢占 = PCIe 往返传输 → 比 HBM 慢 100 倍，高延迟\n3. 三队列状态机复杂，扩展性差',
+  },
+];
+
+let cur=0,playing=false,timer=null;
+
+function render(){
+  const s=steps[cur];
+  document.getElementById('event').innerHTML=`<span class="t">场景 ${cur+1}</span>${s.event}`;
+
+  document.getElementById('q-waiting').innerHTML=
+    s.waiting.length?s.waiting.map(id=>pill(id)).join(''):'<div class="empty-note">空</div>';
+
+  document.getElementById('q-running').innerHTML=s.running.map(r=>{
+    const b=r.phase==='prefill'?`<span class="phase-badge pb-prefill">PREFILL</span>`:`<span class="phase-badge pb-decode">DECODE</span>`;
+    return `<div class="phase-row">${pill(r.id)}${b}</div>`;
+  }).join('')||'<div class="empty-note">空</div>';
+
+  document.getElementById('q-swapped').innerHTML=s.swapped.map(r=>
+    `<div class="phase-row">${pill(r.id)}<span class="phase-badge pb-swap">SWAP</span></div>`
+  ).join('')||'<div class="empty-note">空</div>';
+
+  const sf=document.getElementById('swap-flow');
+  sf.style.opacity=s.swapActive?'1':'0.3';
+  sf.style.borderColor=s.swapActive?'#882288':'#3a1040';
+  document.getElementById('swap-dir').textContent=s.swapDir;
+  document.getElementById('swap-msg').textContent=s.swapMsg;
+
+  document.getElementById('arr2').className='arr'+(s.swapActive?' active':'');
+  document.getElementById('arr2-label').className='arr-label'+(s.swapActive?' active':'');
+
+  document.getElementById('warning').innerHTML=s.warning.replace(/\n/g,'<br>');
+}
+
+function next(){if(cur<steps.length-1){cur++;render();}}
+function prev(){if(cur>0){cur--;render();}}
+function togglePlay(){
+  if(playing){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}
+  else{playing=true;document.getElementById('playBtn').textContent='⏸ 暂停';
+    timer=setInterval(()=>{if(cur<steps.length-1){cur++;render();}else{clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}},2200);}
+}
+function resetAnim(){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';cur=0;render();}
+render();
+</script>
+</body>
+</html>

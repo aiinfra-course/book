@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v0 vs v1 架构对比</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'SF Mono','Monaco','Inconsolata',monospace;background:#1a1a1a;color:#fff;padding:14px;}
+h1{font-size:1.05rem;text-align:center;color:#4a9eff;margin-bottom:4px;}
+.subtitle{font-size:0.65rem;color:#555;text-align:center;margin-bottom:12px;}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+@media(max-width:600px){.grid{grid-template-columns:1fr;}}
+
+.panel{background:#1e1e1e;border-radius:8px;padding:12px;}
+.panel-title{font-size:0.7rem;text-transform:uppercase;letter-spacing:1px;
+  padding-bottom:6px;margin-bottom:10px;border-bottom:1px solid #2a2a2a;
+  display:flex;align-items:center;gap:6px;}
+.panel-title.v0{color:#ff8080;}
+.panel-title.v1{color:#80ff80;}
+
+/* Queue boxes */
+.arch{position:relative;}
+.queues{display:flex;flex-direction:column;gap:8px;}
+.queue-row{display:flex;align-items:center;gap:8px;}
+.queue-box{
+  border-radius:6px;padding:8px 10px;min-width:80px;text-align:center;
+  font-size:0.65rem;font-weight:600;transition:all 0.4s;
+}
+.q-waiting{background:#2a2010;border:1px solid #554020;color:#d09050;}
+.q-running{background:#102a10;border:1px solid #205520;color:#50c050;}
+.q-swapped{background:#2a1020;border:1px solid #552040;color:#c050a0;}
+
+.arrow-box{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  font-size:0.55rem;color:#666;
+}
+.arr{font-size:1rem;line-height:1;}
+
+/* Request pill */
+.req-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 7px;border-radius:10px;font-size:0.58rem;font-weight:700;
+  margin:2px;transition:all 0.3s;
+}
+
+/* Phase badge */
+.phase-badge{
+  font-size:0.5rem;padding:1px 4px;border-radius:3px;
+  vertical-align:middle;margin-left:3px;
+}
+.badge-prefill{background:#1a3050;color:#6aaae0;}
+.badge-decode{background:#1a3020;color:#6ad070;}
+.badge-swap{background:#3a1530;color:#d060a0;}
+.badge-preempt{background:#3a1010;color:#e06060;}
+.badge-resume{background:#0a2a1a;color:#40d080;}
+
+/* Separator */
+.sep{text-align:center;font-size:0.6rem;color:#333;padding:4px 0;}
+
+/* Key insight box */
+.insight{
+  background:#0d1f0d;border:1px solid #1a3a1a;
+  border-radius:6px;padding:8px 10px;margin-top:8px;
+  font-size:0.63rem;color:#80d080;line-height:1.6;
+}
+.insight.bad{background:#1f0d0d;border-color:#3a1a1a;color:#d08080;}
+
+/* Swap illustration */
+.swap-flow{
+  display:flex;align-items:center;gap:6px;
+  background:#1a0a1a;border-radius:5px;padding:6px 8px;
+  font-size:0.58rem;color:#888;margin-top:6px;
+}
+.mem-box{
+  padding:3px 8px;border-radius:3px;font-size:0.55rem;font-weight:600;
+  text-align:center;
+}
+.mem-gpu{background:#1a2a3a;color:#4a9eff;border:1px solid #2a4a6a;}
+.mem-cpu{background:#2a2a1a;color:#d0c050;border:1px solid #4a4a1a;}
+.swap-arr{color:#664466;font-size:0.8rem;}
+.swap-note{font-size:0.5rem;color:#664466;}
+
+/* Counter vis */
+.counter-box{
+  background:#0d1525;border:1px solid #1a2a3a;
+  border-radius:6px;padding:8px 10px;margin-top:8px;font-size:0.63rem;
+}
+.counter-row{
+  display:flex;align-items:center;gap:8px;padding:3px 0;
+  border-bottom:1px solid #1a1a1a;
+}
+.counter-row:last-child{border-bottom:none;}
+.cname{color:#888;width:50px;font-size:0.58rem;}
+.cbar-wrap{flex:1;height:8px;background:#1a1a1a;border-radius:4px;overflow:hidden;}
+.cbar{height:100%;border-radius:4px;transition:width 0.5s;}
+.cnum{font-size:0.58rem;color:#4a9eff;min-width:55px;text-align:right;}
+.cstatus{font-size:0.5rem;padding:1px 5px;border-radius:3px;}
+
+/* Anim controls */
+.controls{display:flex;gap:8px;justify-content:center;margin-bottom:10px;}
+.btn{padding:5px 14px;border:none;border-radius:5px;font-size:0.72rem;cursor:pointer;}
+.btn.primary{background:#4a9eff;color:#fff;}
+.btn.secondary{background:#2a2a2a;color:#aaa;}
+
+.step-desc{
+  background:#1a1a2a;border-left:3px solid #4a9eff;
+  padding:5px 10px;border-radius:0 5px 5px 0;
+  font-size:0.68rem;color:#bbb;margin-bottom:10px;
+}
+</style>
+</head>
+<body>
+<h1>vLLM v0 vs v1 调度架构对比</h1>
+<p class="subtitle">同一个请求，在两个版本下的生命周期有何不同</p>
+
+<div class="controls">
+  <button class="btn secondary" onclick="prev()">◀</button>
+  <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+  <button class="btn secondary" onclick="next()">▶</button>
+  <button class="btn secondary" onclick="resetAnim()">重置</button>
+</div>
+<div class="step-desc" id="step-desc">初始状态：Req A（长 prompt）、Req B（正在 Decode）、Req C（新到达）</div>
+
+<div class="grid">
+  <!-- V0 -->
+  <div class="panel">
+    <div class="panel-title v0">❌ v0 架构 — 三队列 + 显式阶段</div>
+
+    <div class="queues">
+      <div class="queue-row">
+        <div class="queue-box q-waiting">
+          <div style="font-size:0.55rem;color:#888;margin-bottom:4px;">WAITING</div>
+          <div id="v0-waiting"></div>
+        </div>
+        <div class="arrow-box">
+          <div class="arr">→</div>
+          <div>调度</div>
+        </div>
+        <div class="queue-box q-running" style="flex:1">
+          <div style="font-size:0.55rem;color:#888;margin-bottom:4px;">RUNNING</div>
+          <div id="v0-running"></div>
+          <div style="font-size:0.5rem;color:#444;margin-top:5px;border-top:1px solid #1a3a1a;padding-top:4px;">
+            ⚠️ Prefill 和 Decode<br>不能在同一 batch
+          </div>
+        </div>
+        <div class="arrow-box">
+          <div class="arr">→</div>
+          <div>抢占</div>
+        </div>
+        <div class="queue-box q-swapped">
+          <div style="font-size:0.55rem;color:#888;margin-bottom:4px;">SWAPPED</div>
+          <div id="v0-swapped"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="swap-flow" id="v0-swap-flow" style="opacity:0.3">
+      <div class="mem-box mem-gpu">GPU HBM</div>
+      <div class="swap-arr">⇄</div>
+      <div class="mem-box mem-cpu">CPU DRAM</div>
+      <div style="flex:1">
+        <div id="v0-swap-text" style="color:#664466">KV Cache Swap（PCIe ~16 GB/s）</div>
+        <div class="swap-note">⚠️ 比 HBM 慢 100 倍</div>
+      </div>
+    </div>
+
+    <div class="insight bad" id="v0-insight">
+      阶段区分导致 <strong>Prefill bubble</strong>：<br>
+      新请求 Prefill 时，所有 Decode 请求必须等待整轮结束
+    </div>
+  </div>
+
+  <!-- V1 -->
+  <div class="panel">
+    <div class="panel-title v1">✅ v1 架构 — 两队列 + 统一计数器</div>
+
+    <div class="queues">
+      <div class="queue-row">
+        <div class="queue-box q-waiting">
+          <div style="font-size:0.55rem;color:#888;margin-bottom:4px;">WAITING</div>
+          <div id="v1-waiting"></div>
+        </div>
+        <div class="arrow-box">
+          <div class="arr">⇄</div>
+          <div style="text-align:center">调度/<br>抢占</div>
+        </div>
+        <div class="queue-box q-running" style="flex:1">
+          <div style="font-size:0.55rem;color:#888;margin-bottom:4px;">RUNNING</div>
+          <div id="v1-running"></div>
+          <div style="font-size:0.5rem;color:#256a25;margin-top:5px;border-top:1px solid #1a3a1a;padding-top:4px;">
+            ✅ Prefill + Decode 可以<br>在同一 batch 混跑
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Counter visualization -->
+    <div class="counter-box">
+      <div style="font-size:0.58rem;color:#4a6a9a;margin-bottom:6px;">
+        num_computed_tokens 进度（统一追踪，无需状态切换）
+      </div>
+      <div id="v1-counters"></div>
+    </div>
+
+    <div class="insight" id="v1-insight">
+      抢占 = <strong>直接 free KV blocks</strong>，放回 waiting 头部<br>
+      不需要 Swap！prefix cache 命中可加速恢复
+    </div>
+  </div>
+</div>
+
+<script>
+const REQS = [
+  {id:'A', label:'Req A', color:'#4a9eff', prompt:48, decode:32},
+  {id:'B', label:'Req B', color:'#f0a040', prompt:16, decode:48},
+  {id:'C', label:'Req C', color:'#f06080', prompt:32, decode:32},
+];
+
+const steps = [
+  {
+    desc: '初始状态：A 在 Prefill，B 在 Decode，C 等待调度',
+    v0: { waiting:['C'], running:[{id:'A',phase:'prefill'},{id:'B',phase:'decode'}], swapped:[] },
+    v1: { waiting:['C'], running:['A','B'] },
+    computed: {A:20, B:40, C:0},
+    swapActive: false,
+    v0Insight: 'v0：A(Prefill) 和 B(Decode) 不能同时在 running 里处理，需要分批',
+    v1Insight: 'v1：A 和 B 统一处理，调度器只看 num_computed_tokens，无需区分阶段',
+  },
+  {
+    desc: 'v0 问题：新 Prefill 请求 C 到达 → Decode 请求全部阻塞，等 Prefill 完成',
+    v0: { waiting:[], running:[{id:'A',phase:'prefill'},{id:'C',phase:'prefill'}], swapped:[{id:'B',phase:'swap'}] },
+    v1: { waiting:['C'], running:['A','B'] },
+    computed: {A:40, B:42, C:0},
+    swapActive: false,
+    v0Insight: '⚠️ v0 Prefill batch 里只能有 Prefill！B 被迫让出，等待本轮 Prefill 结束',
+    v1Insight: 'v1：C 进入 waiting，A/B 继续正常运行，互不干扰',
+  },
+  {
+    desc: 'v0 内存压力触发抢占 → KV Cache 写到 CPU（PCIe 传输，极慢）',
+    v0: { waiting:[], running:[{id:'A',phase:'prefill'},{id:'C',phase:'prefill'}], swapped:[{id:'B',phase:'swap'}] },
+    v1: { waiting:['C'], running:['A','B'] },
+    computed: {A:48, B:44, C:0},
+    swapActive: true,
+    v0Insight: '⚠️ B 的 KV Cache 通过 PCIe 写入 CPU，速度 ~16 GB/s vs HBM 的 ~3 TB/s，慢 100×',
+    v1Insight: 'v1 无 swapped 队列。内存不足时直接 free KV blocks，比 Swap 快得多',
+  },
+  {
+    desc: 'v1 内存不足时：直接 free KV，放回 waiting 头部，下轮优先恢复',
+    v0: { waiting:[{id:'B', status:'waiting-back'}], running:[{id:'A',phase:'decode'},{id:'C',phase:'prefill'}], swapped:[] },
+    v1: { waiting:[{id:'B', preempted:true}], running:['A','C'] },
+    computed: {A:52, B:0, C:10},
+    swapActive: false,
+    v0Insight: 'B 从 swapped 恢复需要再次 PCIe 传输 KV 回 GPU，又一次慢操作',
+    v1Insight: '✅ B.num_computed_tokens=0，放回 waiting 头部，下轮 prefix cache 命中可跳过部分 prefill',
+  },
+  {
+    desc: 'v1：下一轮 B 高优先级恢复，C 继续 Prefill，三者同 batch 运行',
+    v0: { waiting:[], running:[{id:'A',phase:'decode'},{id:'B',phase:'decode'},{id:'C',phase:'decode'}], swapped:[] },
+    v1: { waiting:[], running:['A','B','C'] },
+    computed: {A:56, B:16, C:42},
+    swapActive: false,
+    v0Insight: 'v0 最终恢复，但经历了 Swap 的往返开销，延迟显著更高',
+    v1Insight: '✅ v1：A/B/C 混跑，Decode+Prefill 同一 batch，GPU 利用率更高',
+  },
+];
+
+let cur = 0, playing = false, timer = null;
+
+function pill(req, extra='') {
+  const r = REQS.find(x=>x.id===req.id||x.id===req);
+  if(!r) return '';
+  return `<span class="req-pill" style="background:${r.color}22;color:${r.color};border:1px solid ${r.color}44">${r.label}${extra}</span>`;
+}
+
+function render() {
+  const s = steps[cur];
+  document.getElementById('step-desc').textContent = s.desc;
+
+  // V0
+  document.getElementById('v0-waiting').innerHTML =
+    s.v0.waiting.map(r => pill(r)).join('') || '<span style="color:#333;font-size:0.55rem">空</span>';
+  document.getElementById('v0-running').innerHTML =
+    s.v0.running.map(r => {
+      const badge = r.phase === 'prefill'
+        ? `<span class="phase-badge badge-prefill">PREFILL</span>`
+        : `<span class="phase-badge badge-decode">DECODE</span>`;
+      return pill(r) + badge;
+    }).join('') || '<span style="color:#333;font-size:0.55rem">空</span>';
+  document.getElementById('v0-swapped').innerHTML =
+    s.v0.swapped.map(r => pill(r) + `<span class="phase-badge badge-swap">SWAP</span>`).join('') || '<span style="color:#333;font-size:0.55rem">空</span>';
+
+  const swapEl = document.getElementById('v0-swap-flow');
+  swapEl.style.opacity = s.swapActive ? '1' : '0.25';
+  if(s.swapActive) swapEl.style.borderLeft = '2px solid #883366';
+
+  document.getElementById('v0-insight').textContent = s.v0Insight;
+  document.getElementById('v1-insight').textContent = s.v1Insight;
+
+  // V1
+  const v1w = s.v1.waiting;
+  document.getElementById('v1-waiting').innerHTML =
+    v1w.map(r => {
+      if(r.preempted) return pill(r) + `<span class="phase-badge badge-preempt">PREEMPTED</span>`;
+      return pill(r);
+    }).join('') || '<span style="color:#333;font-size:0.55rem">空</span>';
+  document.getElementById('v1-running').innerHTML =
+    s.v1.running.map(r => pill(r)).join('') || '<span style="color:#333;font-size:0.55rem">空</span>';
+
+  // Counters
+  let cHtml = '';
+  REQS.forEach(r => {
+    const comp = s.computed[r.id] || 0;
+    const total = r.prompt + r.decode;
+    const pct = Math.round(comp/total*100);
+    const phase = comp < r.prompt ? 'Prefill' : 'Decode';
+    const phaseColor = comp < r.prompt ? '#5a8ad0' : '#5ab870';
+    cHtml += `<div class="counter-row">
+      <div class="cname" style="color:${r.color}">${r.label}</div>
+      <div class="cbar-wrap"><div class="cbar" style="width:${pct}%;background:${r.color}"></div></div>
+      <div class="cnum">${comp}/${total} tok</div>
+      <div class="cstatus" style="background:${phaseColor}22;color:${phaseColor}">${phase}</div>
+    </div>`;
+  });
+  document.getElementById('v1-counters').innerHTML = cHtml;
+}
+
+function next(){if(cur<steps.length-1){cur++;render();}}
+function prev(){if(cur>0){cur--;render();}}
+function togglePlay(){
+  if(playing){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}
+  else{
+    playing=true;document.getElementById('playBtn').textContent='⏸ 暂停';
+    timer=setInterval(()=>{if(cur<steps.length-1){cur++;render();}else{clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}},2000);
+  }
+}
+function resetAnim(){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';cur=0;render();}
+
+render();
+</script>
+</body>
+</html>

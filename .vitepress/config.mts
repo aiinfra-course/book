@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'AI Infra 技术系列',
   description: '深入理解 AI 推理系统原理与优化',
-  base: '/book/',
+  base: '/',
   lang: 'zh-CN',
 
   themeConfig: {

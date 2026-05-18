@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>静态批处理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'SF Mono','Monaco',monospace;background:#1a1a1a;color:#fff;padding:14px;}
+h1{font-size:1.05rem;text-align:center;color:#ff8080;margin-bottom:3px;}
+.subtitle{font-size:0.65rem;color:#555;text-align:center;margin-bottom:10px;}
+
+.controls{display:flex;gap:8px;justify-content:center;margin-bottom:10px;}
+.btn{padding:6px 14px;border:none;border-radius:5px;font-size:0.72rem;cursor:pointer;}
+.btn.primary{background:#4a9eff;color:#fff;}
+.btn.secondary{background:#2a2a2a;color:#aaa;}
+
+.event{background:#1e1e1e;border-left:3px solid #ff6060;padding:6px 10px;
+  border-radius:0 5px 5px 0;font-size:0.7rem;color:#bbb;margin-bottom:10px;min-height:28px;}
+.event .t{color:#ff8080;font-weight:700;margin-right:6px;}
+
+.cards{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;}
+
+.card{border-radius:7px;padding:9px 11px;border:1px solid transparent;transition:all 0.3s;}
+.card.active{background:#1a2a1a;border-color:#2a5a2a;}
+.card.done-waiting{background:#1e1010;border:1px dashed #4a2020;}
+.card.blocked{background:#151515;border:1px dashed #2a2020;opacity:0.55;}
+.card.done{background:#141414;border-color:#222;opacity:0.6;}
+
+.card-head{display:flex;align-items:center;gap:7px;margin-bottom:4px;}
+.card-name{font-size:0.7rem;font-weight:700;}
+.badge{font-size:0.52rem;padding:1px 5px;border-radius:3px;font-weight:600;}
+.badge-prefill{background:#1a3050;color:#6aaae0;}
+.badge-decode{background:#1a3a1a;color:#5ad07a;}
+.badge-done{background:#252525;color:#666;}
+.badge-waste{background:#3a1010;color:#d05050;}
+.badge-blocked{background:#1a0a0a;color:#663333;}
+
+.prompt{font-size:0.6rem;color:#666;margin-bottom:3px;}
+.output-area{display:flex;flex-wrap:wrap;gap:3px;min-height:18px;}
+.tok{padding:1px 5px;border-radius:3px;font-size:0.6rem;}
+.placeholder{font-size:0.6rem;color:#333;font-style:italic;}
+
+.waste-msg{font-size:0.58rem;color:#883333;background:#1e0d0d;
+  border:1px dashed #442222;border-radius:3px;padding:2px 6px;margin-top:4px;display:inline-block;}
+.blocked-msg{font-size:0.58rem;color:#663333;display:flex;align-items:center;gap:4px;}
+
+.prog{height:3px;background:#222;border-radius:2px;margin-top:5px;}
+.prog-bar{height:3px;border-radius:2px;transition:width 0.3s;}
+
+/* Timeline */
+.tl-section{background:#161616;border-radius:7px;padding:10px;margin-bottom:10px;}
+.tl-title{font-size:0.6rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;}
+.tl-axis{display:flex;margin-left:52px;gap:2px;margin-bottom:3px;}
+.tl-t{width:24px;text-align:center;font-size:0.48rem;color:#444;flex-shrink:0;}
+.tl-t.cur{color:#ff8080;font-weight:700;}
+.tl-row{display:flex;align-items:center;gap:4px;margin-bottom:3px;}
+.tl-label{width:48px;font-size:0.55rem;text-align:right;flex-shrink:0;}
+.tl-slots{display:flex;gap:2px;}
+.tl-slot{width:24px;height:20px;border-radius:3px;display:flex;align-items:center;
+  justify-content:center;font-size:0.48rem;font-weight:700;flex-shrink:0;}
+.tl-slot.prefill{background:#1a3050;color:#5a8ac0;}
+.tl-slot.decode{background:#1a3a1a;color:#5ab060;}
+.tl-slot.waste{background-color:#1f1010;color:#663333;
+  background-image:repeating-linear-gradient(45deg,transparent,transparent 2px,rgba(200,50,50,0.15) 2px,rgba(200,50,50,0.15) 4px);}
+.tl-slot.blocked{background:#111;color:#333;}
+.tl-slot.done{background:#1a1a1a;color:#333;}
+.tl-slot.empty{background:#111;color:#222;}
+.tl-slot.cur-tick{outline:2px solid rgba(255,255,255,0.5);outline-offset:-2px;}
+.gpu-title{font-size:0.6rem;color:#555;margin-bottom:5px;}
+.gpu-bar-wrap{height:18px;background:#111;border-radius:4px;overflow:hidden;margin-bottom:4px;}
+.gpu-bar{height:100%;display:flex;align-items:center;padding-left:8px;
+  font-size:0.6rem;font-weight:700;color:#fff;transition:width 0.6s,background 0.6s;}
+.gpu-note{font-size:0.58rem;color:#664444;text-align:center;}
+
+/* Batch indicator */
+.batch-info{display:flex;gap:8px;margin-bottom:8px;font-size:0.62rem;color:#888;}
+.bi{background:#1e1e1e;border-radius:4px;padding:4px 8px;}
+.bi span{font-weight:700;}
+</style>
+</head>
+<body>
+<h1>静态批处理（Static Batching）</h1>
+<p class="subtitle">批次大小固定 — 最慢的请求决定所有人的等待时间</p>
+
+<div class="controls">
+  <button class="btn secondary" onclick="prev()">◀</button>
+  <button class="btn primary" id="playBtn" onclick="togglePlay()">▶ 播放</button>
+  <button class="btn secondary" onclick="next()">▶</button>
+  <button class="btn secondary" onclick="resetAnim()">重置</button>
+</div>
+
+<div class="event" id="event"><span class="t">t=0</span>Batch 1 开始：A/B/C 同时进入，批次大小固定为 3，D/E 只能等待</div>
+
+<div class="batch-info">
+  <div class="bi">Batch 1：<span id="b1-status">进行中</span></div>
+  <div class="bi">Batch 2：<span id="b2-status" style="color:#444">等待</span></div>
+  <div class="bi">完成：<span id="done-count">0</span>/5</div>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<!-- Timeline strip -->
+<div class="tl-section">
+  <div class="tl-title">时序图 — 每格代表 1 个 iteration（P=Prefill D=Decode ░=浪费 ·=阻塞）</div>
+  <div class="tl-axis" id="tl-axis"></div>
+  <div id="tl-rows"></div>
+</div>
+
+<div class="gpu-section">
+  <div class="gpu-title">GPU 有效利用率（每轮只有 C 在运算的那些步骤极度浪费）</div>
+  <div class="gpu-bar-wrap">
+    <div class="gpu-bar" id="gpu-bar" style="width:100%;background:#4a9eff;">100%</div>
+  </div>
+  <div class="gpu-note" id="gpu-note"></div>
+</div>
+
+<script>
+const TICKS = 12;
+
+// Pre-computed full timeline for all ticks
+// A: P=0, D=1, waste=2..7, done=8+
+// B: P=0, D=1..3, waste=4..7, done=8+
+// C: P=0, D=1..7, done=8+
+// D: blocked=0..7, P=8, D=9..11
+// E: blocked=0..7, P=8, D=9..10, waste=11
+const FULL_TL = {
+  A: ['prefill','decode','waste','waste','waste','waste','waste','waste','done','done','done','done'],
+  B: ['prefill','decode','decode','decode','waste','waste','waste','waste','done','done','done','done'],
+  C: ['prefill','decode','decode','decode','decode','decode','decode','decode','done','done','done','done'],
+  D: ['blocked','blocked','blocked','blocked','blocked','blocked','blocked','blocked','prefill','decode','decode','decode'],
+  E: ['blocked','blocked','blocked','blocked','blocked','blocked','blocked','blocked','prefill','decode','decode','waste'],
+};
+const TL_LABEL = {prefill:'P',decode:'D',waste:'░',blocked:'·',done:'✓',empty:''};
+
+function renderTimeline(curT) {
+  // Axis
+  let axHtml='';
+  for(let t=0;t<TICKS;t++) axHtml+=`<div class="tl-t${t===curT?' cur-tick':''}">${t}</div>`;
+  document.getElementById('tl-axis').innerHTML=axHtml;
+
+  // Rows
+  let rowHtml='';
+  REQS.forEach(req=>{
+    const row=FULL_TL[req.id];
+    rowHtml+=`<div class="tl-row">
+      <div class="tl-label" style="color:${req.color}">${req.label}</div>
+      <div class="tl-slots">`;
+    for(let t=0;t<TICKS;t++){
+      const s=row[t]||'empty';
+      const isCur=t===curT;
+      rowHtml+=`<div class="tl-slot ${s}${isCur?' cur-tick':''}">${TL_LABEL[s]||''}</div>`;
+    }
+    rowHtml+=`</div></div>`;
+  });
+  document.getElementById('tl-rows').innerHTML=rowHtml;
+}
+
+const REQS = [
+  {id:'A',label:'Req A',prompt:'Q: 2+3=?',       color:'#4a9eff',outputChunks:['5'],         prefill:1,decode:1},
+  {id:'B',label:'Req B',prompt:'Q: 写一句鼓励的话', color:'#f0a040',outputChunks:['加油！','你一定','可以的！'],prefill:1,decode:3},
+  {id:'C',label:'Req C (长)',prompt:'Q: 介绍中国四大名著',color:'#f06080',outputChunks:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],prefill:1,decode:7},
+  {id:'D',label:'Req D',prompt:'Q: Python 如何排序？',color:'#5ad0a0',outputChunks:['用sorted()','或list.sort()','实现'],prefill:1,decode:3},
+  {id:'E',label:'Req E',prompt:'Q: 谢谢你',       color:'#a05ad0',outputChunks:['不客气！','随时为您服务。'],prefill:1,decode:2},
+];
+
+// Static batching:
+// Batch1 = A,B,C. Duration = max(1+1, 1+3, 1+7) = 9 ticks (t=0..8)
+// A: prefill t=0, decode t=1, done t=1, WASTE t=2..7
+// B: prefill t=0, decode t=1,2,3, done t=3, WASTE t=4..7
+// C: prefill t=0, decode t=1..7, done t=7
+// Batch2 = D,E starts t=8
+// D: prefill t=8, decode t=9..11, done t=11
+// E: prefill t=8, decode t=9..10, done t=10, WASTE t=11
+
+const steps = [
+  {t:0, event:'t=0  Batch 1 开始。A/B/C 同时 Prefill。D/E 在 waiting 被阻塞，无法进入',
+   states:{A:'prefill',B:'prefill',C:'prefill',D:'blocked',E:'blocked'},
+   outputs:{A:[],B:[],C:[],D:[],E:[]}, gpu:100, gpuNote:'3 个请求全部 Prefill，GPU 满载',
+   b1:'进行中',b2:'等待',done:0},
+  {t:1, event:'t=1  A/B/C 进入 Decode，各生成第 1 个 token。A 只需 1 步，即将完成',
+   states:{A:'decode',B:'decode',C:'decode',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！'],C:['四大名著'],D:[],E:[]}, gpu:100, gpuNote:'3 个请求同时 Decode',
+   b1:'进行中',b2:'等待',done:0},
+  {t:2, event:'t=2  ⚠️ A 已完成，但批次未结束！A 的 slot 只能空转等待 C 跑完。D/E 仍无法进入',
+   states:{A:'waste',B:'decode',C:'decode',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！','你一定'],C:['四大名著','分别是'],D:[],E:[]}, gpu:67, gpuNote:'⚠️ 有效计算只剩 B+C，A 的 slot 在做无用功',
+   b1:'进行中',b2:'等待',done:1},
+  {t:3, event:'t=3  B 生成最后一个 token，B 也完成了。现在只有 C 还在跑，但批次必须等它',
+   states:{A:'waste',B:'decode',C:'decode',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》'],D:[],E:[]}, gpu:67, gpuNote:'⚠️ A/B 完成但 slot 仍被占用',
+   b1:'进行中',b2:'等待',done:1},
+  {t:4, event:'t=4  ⚠️ B 完成。现在 A/B 两个 slot 全都在空转，只有 C 有效运行。D/E 等待中',
+   states:{A:'waste',B:'waste',C:'decode',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》'],D:[],E:[]}, gpu:33, gpuNote:'⚠️⚠️ 3 个 slot 中只有 1 个有效，利用率跌至 33%',
+   b1:'进行中',b2:'等待',done:2},
+  {t:5, event:'t=5  C 继续 Decode。A/B 的 slot 已经白白浪费了 3 个 tick，D/E 仍在等',
+   states:{A:'waste',B:'waste',C:'decode',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》'],D:[],E:[]}, gpu:33, gpuNote:'⚠️⚠️ 利用率持续 33%',
+   b1:'进行中',b2:'等待',done:2},
+  {t:6, event:'t=6  C 还在跑。D 等待了 6 个 tick，E 等待了 6 个 tick——它们什么都没做',
+   states:{A:'waste',B:'waste',C:'decode',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》'],D:[],E:[]}, gpu:33, gpuNote:'⚠️⚠️ D/E 已等待 6 ticks',
+   b1:'进行中',b2:'等待',done:2},
+  {t:7, event:'t=7  ✅ C 终于完成！Batch 1 结束。此时 D/E 终于可以开始了——它们等了整整 8 ticks',
+   states:{A:'done',B:'done',C:'done',D:'blocked',E:'blocked'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],D:[],E:[]}, gpu:0, gpuNote:'⚠️ Batch 1 刚结束，GPU 短暂空转，等待 Batch 2 调度',
+   b1:'✅ 完成',b2:'启动中',done:3},
+  {t:8, event:'t=8  Batch 2 开始：D/E 终于进入 Prefill。D 等了 8 ticks，E 等了 8 ticks',
+   states:{A:'done',B:'done',C:'done',D:'prefill',E:'prefill'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],D:[],E:[]}, gpu:67, gpuNote:'Batch 2：D/E Prefill',
+   b1:'✅ 完成',b2:'进行中',done:3},
+  {t:9, event:'t=9  D/E 开始 Decode。浪费了 8 ticks 后，它们现在才开始产出结果',
+   states:{A:'done',B:'done',C:'done',D:'decode',E:'decode'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],D:['用sorted()'],E:['不客气！']}, gpu:67, gpuNote:'D/E Decode，有效利用',
+   b1:'✅ 完成',b2:'进行中',done:3},
+  {t:11, event:'t=11  ✅ D/E 完成，全部结束。总用时 11 ticks。静态批处理因调度空泡浪费了大量时间',
+   states:{A:'done',B:'done',C:'done',D:'done',E:'done'},
+   outputs:{A:['5'],B:['加油！','你一定','可以的！'],C:['四大名著','分别是','《红楼梦》','《西游记》','《水浒传》','《三国演义》','各具特色。'],D:['用sorted()','或list.sort()','实现'],E:['不客气！','随时为您服务。']}, gpu:0, gpuNote:'全部完成。总用时 11 ticks，中间大量浪费',
+   b1:'✅ 完成',b2:'✅ 完成',done:5},
+];
+
+let cur=0, playing=false, timer=null;
+
+function render(){
+  const s=steps[cur];
+  document.getElementById('event').innerHTML=`<span class="t">t=${s.t}</span>${s.event}`;
+  document.getElementById('b1-status').textContent=s.b1;
+  document.getElementById('b2-status').textContent=s.b2;
+  document.getElementById('b2-status').style.color=s.b2==='等待'?'#444':s.b2.startsWith('✅')?'#4ade80':'#d0a040';
+  document.getElementById('done-count').textContent=s.done;
+
+  // Cards
+  let html='';
+  REQS.forEach(req=>{
+    const st=s.states[req.id];
+    const out=s.outputs[req.id]||[];
+    let cls='card ', badge='', extra='';
+    if(st==='prefill'){cls+='active';badge=`<span class="badge badge-prefill">Prefill</span>`;}
+    else if(st==='decode'){cls+='active';badge=`<span class="badge badge-decode">Decode</span>`;}
+    else if(st==='waste'){cls+='done-waiting';badge=`<span class="badge badge-waste">⏳ 空转等待</span>`;
+      extra=`<div class="waste-msg">slot 已完成，等 C 结束才能释放</div>`;}
+    else if(st==='blocked'){cls+='blocked';badge=`<span class="badge badge-blocked">被阻塞</span>`;
+      extra=`<div class="blocked-msg">🚫 Batch 1 未结束，无法进入</div>`;}
+    else if(st==='done'){cls+='done';badge=`<span class="badge badge-done">✓ 完成</span>`;}
+
+    const total=req.prefill+req.decode;
+    const comp=out.length>0?req.prefill+out.length:0;
+    const pct=Math.round(comp/total*100);
+    const tokHtml=out.length>0?out.map((t,i)=>`<span class="tok" style="background:${req.color}18;color:${req.color}">${t}</span>`).join('')
+      :`<span class="placeholder">${st==='blocked'||st==='done'&&comp===0?'—':'计算中…'}</span>`;
+
+    html+=`<div class="${cls}">
+      <div class="card-head">
+        <span class="card-name" style="color:${req.color}">${req.label}</span>${badge}
+      </div>
+      <div class="prompt">▶ ${req.prompt}</div>
+      <div class="output-area">${tokHtml}</div>
+      <div class="prog"><div class="prog-bar" style="width:${pct}%;background:${req.color}"></div></div>
+      ${extra}
+    </div>`;
+  });
+  document.getElementById('cards').innerHTML=html;
+
+  // GPU
+  const g=s.gpu;
+  const gc=g>60?'#4a9eff':g>30?'#d0a040':'#ff4444';
+  document.getElementById('gpu-bar').style.width=g+'%';
+  document.getElementById('gpu-bar').style.background=gc;
+  document.getElementById('gpu-bar').textContent=g+'%';
+  document.getElementById('gpu-note').textContent=s.gpuNote;
+  renderTimeline(s.t);
+}
+
+function next(){if(cur<steps.length-1){cur++;render();}}
+function prev(){if(cur>0){cur--;render();}}
+function togglePlay(){
+  if(playing){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}
+  else{playing=true;document.getElementById('playBtn').textContent='⏸ 暂停';
+    timer=setInterval(()=>{if(cur<steps.length-1){cur++;render();}else{clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';}},1200);}
+}
+function resetAnim(){clearInterval(timer);playing=false;document.getElementById('playBtn').textContent='▶ 播放';cur=0;render();}
+render();
+</script>
+</body>
+</html>
