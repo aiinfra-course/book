@@ -5,5 +5,4 @@ observability = { enabled = true }
 [assets]
 directory = ".vitepress/dist"
 
-[compatibility_flags]
-nodejs_compat = true
+compatibility_flags = ["nodejs_compat"]
