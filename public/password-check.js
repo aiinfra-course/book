@@ -1,7 +1,12 @@
 (function() {
   const PASSWORD = 'demo123'; // 设置你的密码
   
-  if (sessionStorage.getItem('auth') !== 'true') {
+  // 等待 DOM 加载完成后再执行
+  function initPasswordProtection() {
+    if (sessionStorage.getItem('auth') === 'true') {
+      return; // 已经认证过，不需要显示密码框
+    }
+    
     const overlay = document.createElement('div');
     overlay.id = 'password-overlay';
     overlay.innerHTML = `
@@ -93,7 +98,16 @@
       }
     });
     
-    const originalBodyStyle = document.body.style.display;
-    document.body.style.display = 'block';
+    // 聚焦输入框
+    setTimeout(() => {
+      document.getElementById('password').focus();
+    }, 100);
+  }
+  
+  // 等待页面加载完成
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initPasswordProtection);
+  } else {
+    initPasswordProtection();
   }
 })();
