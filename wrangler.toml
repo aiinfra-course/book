@@ -1,0 +1,9 @@
+name = "book"
+compatibility_date = "2026-05-18"
+observability = { enabled = true }
+
+[assets]
+directory = ".vitepress/dist"
+
+[compatibility_flags]
+nodejs_compat = true
