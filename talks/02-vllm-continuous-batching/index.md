@@ -22,7 +22,7 @@
 
 把长短不一的请求放在同一批次里，短请求完成后它的 GPU slot 只能空等，直到批次里最慢的请求结束，新请求才能进来。这就是**调度空泡（Scheduling Bubble）**：
 
-<iframe src="/book/cb-static.html" width="100%" height="620" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
+<iframe src="/cb-static.html" width="100%" height="620" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
 
 ---
 
@@ -36,19 +36,19 @@
 
 Continuous Batching 真正的效果如下——每次有请求完成，立刻补入新请求：
 
-<iframe src="/book/cb-dynamic.html" width="100%" height="580" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
+<iframe src="/cb-dynamic.html" width="100%" height="580" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
 
 ### 2.2 vLLM v0：实现了，但有结构性问题
 
 vLLM v0 实现了基本的 Continuous Batching，但保留了显式的 Prefill/Decode 阶段区分，同一个 batch 里两种状态不能共存，且抢占时需要把 KV Cache 通过 PCIe 写出到 CPU：
 
-<iframe src="/book/cb-v0.html" width="100%" height="560" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
+<iframe src="/cb-v0.html" width="100%" height="560" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
 
 ### 2.3 vLLM v1：用一个计数器替代整个状态机
 
 v1 做了根本性的重构：用一个 `num_computed_tokens` 计数器替代整个状态机。每个请求只需要知道"已计算了多少 token"和"总共需要计算多少 token"，Prefill 和 Decode 在调度器眼里没有区别。抢占也因此简化：直接释放 KV blocks，不再需要 PCIe Swap：
 
-<iframe src="/book/cb-v1.html" width="100%" height="580" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
+<iframe src="/cb-v1.html" width="100%" height="580" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
 
 ---
 
@@ -223,7 +223,7 @@ def update_from_output(self, scheduler_output, model_runner_output):
 
 下面的动画把以上所有步骤串在一起，展示一次请求从进入 waiting 队列到返回结果的完整过程，包括 Prefill、Decode、抢占（注意 output token 消失的瞬间）和恢复：
 
-<iframe src="/book/cb-scheduler-loop.html" width="100%" height="720" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
+<iframe src="/cb-scheduler-loop.html" width="100%" height="720" frameborder="0" style="border-radius: 12px; margin: 20px 0;"></iframe>
 
 ---
 

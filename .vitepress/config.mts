@@ -6,9 +6,7 @@ export default defineConfig({
   base: '/',
   lang: 'zh-CN',
 
-  head: [
-    ['script', { src: '/password-check.js' }]
-  ],
+  
 
   themeConfig: {
     logo: '/logo.svg',
