@@ -29,9 +29,6 @@ export default withMermaid(defineConfig({
           {
             text: '02 · vLLM Continuous Batching',
             link: '/talks/02-vllm-continuous-batching/',
-            items: [
-              { text: '完整文档', link: '/talks/02-vllm-continuous-batching/' },
-            ],
           },
           {
             text: '03 · V1 多进程架构设计',
