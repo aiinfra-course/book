@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "puppeteer": "^25.0.4",
-    "vitepress": "^1.5.0"
+    "vitepress": "^1.5.0",
+    "vitepress-plugin-mermaid": "^2.0.17"
   }
 }

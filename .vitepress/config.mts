@@ -1,12 +1,11 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'AI Infra 技术系列',
   description: '深入理解 AI 推理系统原理与优化',
   base: '/',
   lang: 'zh-CN',
-
-  
 
   themeConfig: {
     logo: '/logo.svg',
@@ -15,6 +14,8 @@ export default defineConfig({
       { text: '首页', link: '/' },
       { text: '技术分享', link: '/talks/01-vllm-automatic-prefix-caching/' },
       { text: '02 · Continuous Batching', link: '/talks/02-vllm-continuous-batching/' },
+      { text: '03 · V1 多进程架构', link: '/talks/03-vllm-core-engine/' },
+      { text: '04 · LoRA 多适配器', link: '/talks/04-vllm-lora/' },
     ],
 
     sidebar: [
@@ -31,6 +32,14 @@ export default defineConfig({
             items: [
               { text: '完整文档', link: '/talks/02-vllm-continuous-batching/' },
             ],
+          },
+          {
+            text: '03 · V1 多进程架构设计',
+            link: '/talks/03-vllm-core-engine/',
+          },
+          {
+            text: '04 · LoRA 多适配器支持',
+            link: '/talks/04-vllm-lora/',
           },
         ],
       },
@@ -63,4 +72,4 @@ export default defineConfig({
   markdown: {
     lineNumbers: true,
   },
-})
+}))

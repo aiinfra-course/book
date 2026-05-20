@@ -25,4 +25,16 @@ features:
     details: 深度解析连续批处理：Token 级调度、无 Prefill/Decode 分离、动态抢占与 KV Cache 管理。
     link: /talks/02-vllm-continuous-batching/
     linkText: 阅读文章
+
+  - icon: 🚀
+    title: V1 多进程架构设计
+    details: 深入剖析 vLLM V1 的核心推理引擎架构：多进程设计、进程间通信、调度器与执行器协作。
+    link: /talks/03-vllm-core-engine/
+    linkText: 阅读文章
+
+  - icon: 🎯
+    title: LoRA 多适配器支持
+    details: 理解 vLLM 的 LoRA 动态加载机制：多适配器管理、运行时配置、内存优化与性能提升。
+    link: /talks/04-vllm-lora/
+    linkText: 阅读文章
 ---
