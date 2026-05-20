@@ -66,7 +66,7 @@ v1 做了根本性的重构：用一个 `num_computed_tokens` 计数器替代整
 ### 3.1 请求到达：创建 Request，进入 waiting 队列
 
 ```python
-# engine/core.py:334
+# engine/core.py:425
 def add_request(self, request: Request):
     self.scheduler.add_request(request)
     # → self.waiting.append(request)
@@ -165,13 +165,14 @@ for request in self.running:
 if not preempted_reqs:
     while self.waiting and token_budget > 0:
         request = self.waiting.peek_request()
-        # prefix cache 检测：被抢占后恢复时，命中则跳过部分重算
+        # prefix cache 检测：对所有新请求（含被抢占恢复的）均生效
+        # num_cached > 0 时直接跳过已缓存前缀的 Prefill 计算
         new_computed_blocks, num_cached = self.kv_cache_manager.get_computed_blocks(request)
         new_blocks = self.kv_cache_manager.allocate_slots(request, ...)
         if new_blocks:
             self.running.append(request)
             request.status = RequestStatus.RUNNING
-            request.num_computed_tokens = num_cached  # 从命中位置继续
+            request.num_computed_tokens = num_cached  # 从缓存命中位置开始，跳过前缀重算
 ```
 
 **关键细节：`_update_after_schedule()` 在 GPU 运行前提前推进计数器**
