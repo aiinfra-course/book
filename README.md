@@ -15,6 +15,8 @@
 | 03 | vLLM V1 多进程架构设计 |
 | 04 | vLLM LoRA 多适配器支持 |
 | 05 | vLLM Speculative Decoding：推测解码深度解析 |
+| 06 | vLLM 多模态输入处理：图像、视频、音频 |
+| 07 | vLLM 量化策略与压缩技术：FP8、AWQ、GPTQ 等 |
 
 ## 本地运行
 

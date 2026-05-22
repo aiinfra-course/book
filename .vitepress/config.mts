@@ -17,6 +17,8 @@ export default withMermaid(defineConfig({
       { text: '03 · V1 架构', link: '/talks/03-vllm-core-engine/' },
       { text: '04 · LoRA', link: '/talks/04-vllm-lora/' },
       { text: '05 · Speculative Decoding', link: '/talks/05-vllm-speculative-decoding/' },
+      { text: '06 · Multimodal', link: '/talks/06-vllm-multimodal/' },
+      { text: '07 · Quantization', link: '/talks/07-vllm-quantization/' },
     ],
 
     sidebar: [
@@ -28,6 +30,8 @@ export default withMermaid(defineConfig({
           { text: '03 · V1 多进程架构设计', link: '/talks/03-vllm-core-engine/' },
           { text: '04 · LoRA 多适配器支持', link: '/talks/04-vllm-lora/' },
           { text: '05 · Speculative Decoding', link: '/talks/05-vllm-speculative-decoding/' },
+          { text: '06 · 多模态输入处理', link: '/talks/06-vllm-multimodal/' },
+          { text: '07 · 量化策略与压缩技术', link: '/talks/07-vllm-quantization/' },
         ],
       },
     ],
