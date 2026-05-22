@@ -34,6 +34,7 @@ export default withMermaid(defineConfig({
 
     socialLinks: [
       { icon: 'github', link: 'https://github.com/aiinfra-course/book' },
+
     ],
 
     footer: {
