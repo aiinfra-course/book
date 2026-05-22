@@ -37,4 +37,10 @@ features:
     details: 理解 vLLM 的 LoRA 动态加载机制：多适配器管理、运行时配置、内存优化与性能提升。
     link: /talks/04-vllm-lora/
     linkText: 阅读文章
+
+  - icon: 🔮
+    title: Speculative Decoding
+    details: 深入理解推测解码技术：Draft Model、EAGLE、Ngram 等多种方法的原理与实现。
+    link: /talks/05-vllm-speculative-decoding/
+    linkText: 阅读文章
 ---
